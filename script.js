@@ -236,6 +236,12 @@ document.querySelector(".location-btn").addEventListener("click", function () {
       navigator.geolocation.getCurrentPosition(function (position) {
         document.querySelector(".location-btn").style.display = "none";
         document.getElementById("successMessage").style.display = "block";
+        alert(
+          "Coordinates: " +
+            position.coords.latitude +
+            ", " +
+            position.coords.longitude
+        ); // Added alert for coordinates
       });
     } else {
       alert("Geolocation is not supported by this browser.");
