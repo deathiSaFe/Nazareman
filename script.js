@@ -227,4 +227,29 @@ function activateRow(rowNumber) {
   });
 }
 
+// gelocation for the section 1 place tab
+document.querySelector(".location-btn").addEventListener("click", function () {
+  if (navigator.userAgent.indexOf("Mobi") === -1) {
+    document.getElementById("warningModal").style.display = "flex";
+  } else {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(function (position) {
+        document.querySelector(".location-btn").style.display = "none";
+        document.getElementById("successMessage").style.display = "block";
+      });
+    } else {
+      alert("Geolocation is not supported by this browser.");
+    }
+  }
+});
+
+document.getElementById("closeModal").addEventListener("click", function () {
+  document.getElementById("warningModal").style.display = "none";
+});
+
+document.getElementById("closeSuccess").addEventListener("click", function () {
+  document.getElementById("successMessage").style.display = "none";
+  document.querySelector(".location-btn").style.display = "block";
+});
+
 // #endregion
