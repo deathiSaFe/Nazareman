@@ -487,7 +487,7 @@ h2.second {
 }
 #section1 .content-container #closeModal {
   position: absolute;
-  top: 10px;
+  top: 5px;
   left: 10px;
   cursor: pointer;
   font-size: 20px;
