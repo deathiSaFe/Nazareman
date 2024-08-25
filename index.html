@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+  <!-- #region Head Section -->
+
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="نظر من - بررسی، رتبه‌بندی و نظردهی به خدمات، کسب‌وکارها، کالاها و افراد و یافتن بهترین‌های اطراف شما"
+    />
+    <meta
+      name="keywords"
+      content="نظر من، رتبه‌بندی، نظردهی، نظرات کاربران، خدمات، کسب‌وکارها، کالاها، افراد، بهترین‌ها،  بهترین خدمات، بهترین کسب‌وکارها، بهترین افراد، بهترین‌های اطراف شما"
+    />
+    <!--<base href="https://www.nazareman.com/" target="_blank">-->
+    <title>نظر من</title>
+    <link
+      rel="apple-touch-icon"
+      sizes="180x180"
+      href="assets/favicon_io/apple-touch-icon.png"
+    />
+    <link
+      rel="icon"
+      type="image/png"
+      sizes="32x32"
+      href="assets/favicon_io/favicon-32x32.png"
+    />
+    <link
+      rel="icon"
+      type="image/png"
+      sizes="16x16"
+      href="assets/favicon_io/favicon-16x16.png"
+    />
+    <link rel="manifest" href="assets/favicon_io/site.webmanifest" />
+
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <!-- #endregion -->
+
+  <!-- #region Body Section -->
+  <body>
+    <!-- #region header -->
+    <header class="header">
+      <span class="hamburger" onclick="openDrawer()">&#9776;</span>
+      <h2 class="first">به</h2>
+      <img src="assets/logo/logo.png" alt="Logo" class="logo" />
+      <h2 class="second">خوش آمدید</h2>
+      <label class="switch">
+        <input type="checkbox" id="theme-toggle" onclick="toggleTheme()" />
+        <span class="slider round">
+          <span class="icon sun">☀️</span>
+          <span class="icon moon">🌙</span>
+        </span>
+      </label>
+    </header>
+    <!-- #endregion -->
+
+    <!-- #region drawer -->
+    <div id="myDrawer" class="drawer">
+      <button class="closebtn" onclick="closeDrawer()">&times;</button>
+      <div id="drawer-links">
+        <a href="#home">پروفایل من</a>
+        <a href="#services">ورود/ثبت نام</a>
+        <a href="#products">نظرهای من</a>
+        <a href="#about">درباره ما</a>
+        <a href="#contact">تماس</a>
+        <a href="#help">کمک</a>
+      </div>
+    </div>
+    <!-- #endregion -->
+
+    <!-- #region content -->
+    <div class="content">
+      <!-- #region section 1 -->
+      <button class="expand-btn" onclick="toggleSection('section1')">
+        برترین های اطراف شما
+      </button>
+      <div id="section1" class="expandable-section">
+        <ul class="tabs">
+          <li><a href="#section1-place-tab" class="active">مکان</a></li>
+          <li><a href="#section1-person-tab">شخص</a></li>
+          <li><a href="#section1-product-tab">کالا</a></li>
+        </ul>
+        <!-- #region section1-place tab -->
+        <form class="tab-content" id="section1-place-tab">
+          <div class="form-group">
+            <div class="dropdown">
+              <div class="input-container">
+                <input
+                  type="text"
+                  id="shop-search"
+                  placeholder="نوع مکان (مثلا: رستوران، مکانیکی)"
+                  onfocus="showAllItems()"
+                  oninput="filterFunction()"
+                />
+                <span class="clear-button" onclick="clearSearch()">×</span>
+              </div>
+              <div id="dropdown-content" class="dropdown-content">
+                <!-- Options will be populated by JavaScript -->
+              </div>
+            </div>
+          </div>
+          <div id="message-box" style="display: none">
+            <p>
+              آیتم وارد شده در لیست وجود ندارد. آیا مایل به پیشنهاد برای اضافه
+              کردین آن هستید؟
+            </p>
+            <button id="yes-button" type="button">بله</button>
+            <button id="no-button" type="button">نه</button>
+          </div>
+          <div id="confirmation-box" style="display: none">
+            <p>
+              پیشنهاد شما برای نظرمن فرستاده شد. در صورت موافقت کارشناسان آیتم
+              به لیست اضافه می شود.
+            </p>
+            <button id="close-button" type="button">بستن</button>
+          </div>
+
+          <div class="search-box">
+            <div class="search-row">
+              <div class="radio-button-container">
+                <input
+                  type="radio"
+                  name="search-type"
+                  id="location-search"
+                  class="search-radio"
+                />
+              </div>
+              <div class="content-container">
+                <button type="button" class="location-btn">موقعیت من</button>
+                <div class="range-container">
+                  <span class="range-value">شعاع جستجو: </span>
+                  <input
+                    type="range"
+                    min="1"
+                    max="100"
+                    value="5"
+                    class="range-slider"
+                    id="range1"
+                  />
+                  <span class="range-value"> 5 کیلومتر</span>
+                </div>
+              </div>
+            </div>
+            <div class="search-row">
+              <div class="radio-button-container">
+                <input
+                  type="radio"
+                  name="search-type"
+                  id="map-search"
+                  class="search-radio"
+                />
+              </div>
+              <div class="content-container">
+                <button type="button" class="location-btn">
+                  موقعیت روی نقشه
+                </button>
+
+                <div class="range-container">
+                  <span class="range-value">شعاع جستجو: </span>
+                  <input
+                    type="range"
+                    min="1"
+                    max="100"
+                    value="5"
+                    class="range-slider"
+                    id="range1"
+                  />
+                  <span class="range-value"> 5 کیلومتر</span>
+                </div>
+              </div>
+            </div>
+            <div class="search-row">
+              <div class="radio-button-container">
+                <input
+                  type="radio"
+                  name="search-type"
+                  id="dropdown-search"
+                  class="search-radio"
+                />
+              </div>
+              <div class="content-container">
+                <select class="dropdown">
+                  <option>گزینه ۱</option>
+                  <option>گزینه ۲</option>
+                  <option>گزینه ۳</option>
+                </select>
+                <select class="dropdown">
+                  <option>گزینه الف</option>
+                  <option>گزینه ب</option>
+                  <option>گزینه ج</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <button type="button" class="place-search-btn">جستجو</button>
+        </form>
+        <!-- #endregion -->
+
+        <!-- #region section1-person tab -->
+        <div class="tab-content" id="section1-person-tab" style="display: none">
+          <h2>شخص</h2>
+          <p>محتوای مربوط به شخص.</p>
+        </div>
+        <!-- #endregion -->
+
+        <!-- #region section 1-product tab -->
+        <div
+          class="tab-content"
+          id="section1-product-tab"
+          style="display: none"
+        >
+          <h2>کالا</h2>
+          <p>محتوای مربوط به کالا.</p>
+        </div>
+        <!-- #endregion -->
+      </div>
+      <!-- #endregion -->
+
+      <!-- #region section 2 -->
+      <button class="expand-btn" onclick="toggleSection('section2')">
+        ثبت نظر
+      </button>
+      <div id="section2" class="expandable-section">
+        <input type="text" placeholder="جستجو..." />
+        <button>جستجو</button>
+      </div>
+      <!-- #endregion -->
+
+      <!-- #region section 3 -->
+      <button class="expand-btn" onclick="toggleSection('section3')">
+        خواندن نظرات
+      </button>
+      <div id="section3" class="expandable-section">
+        <input type="text" placeholder="جستجو..." />
+        <button>جستجو</button>
+      </div>
+
+      <!-- #endregion  -->
+
+      <!-- #region section 4 -->
+      <button class="expand-btn" onclick="toggleSection('section4')">
+        اضافه نمودن آیتم نظر
+      </button>
+      <div id="section4" class="expandable-section">
+        <div class="tab">
+          <button
+            class="tablinks"
+            onclick="openForm(event, 'place')"
+            id="defaultOpen"
+          >
+            مکان
+          </button>
+          <button class="tablinks" onclick="openForm(event, 'product')">
+            محصول
+          </button>
+          <button class="tablinks" onclick="openForm(event, 'person')">
+            شخص
+          </button>
+        </div>
+      </div>
+      <!-- #endregion -->
+    </div>
+    <!-- #endregion -->
+  </body>
+  <!-- #endregion -->
+
+  <!-- #region Scripts Section -->
+
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+  <script type="text/javascript" src="script.js"></script>
+
+  <!-- #endregion -->
+</html>
