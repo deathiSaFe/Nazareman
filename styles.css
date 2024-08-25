@@ -455,6 +455,7 @@ h2.second {
   align-items: center;
   justify-content: center;
   padding: 10px 20px;
+  margin: 0 auto;
   border: none;
   border-radius: 8px;
   background-color: rgb(0, 0, 255);
