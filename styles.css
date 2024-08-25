@@ -493,7 +493,9 @@ h2.second {
 }
 #section1 .content-container .success-message {
   display: none;
-  background-color: #d4edda;
+  flex-direction: row;
+  align-items: center;
+  background-color: #63fd87;
   color: #155724;
   padding: 10px;
   border-radius: 5px;
