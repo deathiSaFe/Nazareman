@@ -236,7 +236,6 @@ document.querySelector(".location-btn").addEventListener("click", function () {
       navigator.geolocation.getCurrentPosition(function (position) {
         document.querySelector(".location-btn").style.display = "none";
         document.getElementById("successMessage").style.display = "flex";
-        // Added alert for coordinate
       });
     } else {
       alert("Geolocation is not supported by this browser.");
@@ -250,6 +249,6 @@ document.getElementById("closeModal").addEventListener("click", function () {
 
 document.getElementById("closeSuccess").addEventListener("click", function () {
   document.getElementById("successMessage").style.display = "none";
-  document.querySelector(".location-btn").style.display = "block";
+  document.querySelector(".location-btn").style.display = "flex";
 });
 // #endregion
