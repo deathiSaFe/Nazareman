@@ -485,30 +485,39 @@ h2.second {
   border-radius: 5px;
   position: relative;
 }
-#section1 .content-container .close-btn {
+#section1 .content-container #closeModal {
   position: absolute;
   top: 10px;
   left: 10px;
   cursor: pointer;
+  font-size: 20px;
 }
+
 #section1 .content-container .success-message {
   display: none;
-  flex-direction: row;
   align-items: center;
-  background-color: #63fd87;
-  color: #155724;
-  padding: 10px;
+  flex-direction: row;
+  background-color: white;
+  color: black;
   border-radius: 5px;
-  position: relative;
+  width: fit-content;
+  margin: 0 auto;
+  margin-bottom: 10px;
 }
-#section1 .content-container .success-message .close-btn {
-  position: absolute;
-  top: 10px;
-  left: 10px;
-  cursor: pointer;
-}
+
 #section1 .content-container .success-message .checkmark {
-  float: right;
+  margin-left: 10px;
+  margin-right: 10px;
+  color: blue;
+  font-size: 24px;
+  font-weight: bold;
+}
+
+#section1 .content-container .success-message #closeSuccess {
+  margin-left: 10px;
+  margin-right: 10px;
+  color: Red;
+  font-size: 24px;
 }
 
 #section1 .range-container {
