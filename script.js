@@ -235,7 +235,7 @@ document.querySelector(".location-btn").addEventListener("click", function () {
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(function (position) {
         document.querySelector(".location-btn").style.display = "none";
-        document.getElementById("successMessage").style.display = "block";
+        document.getElementById("successMessage").style.display = "flex";
         alert(
           "Coordinates: " +
             position.coords.latitude +
