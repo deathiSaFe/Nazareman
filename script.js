@@ -250,7 +250,6 @@ document.getElementById("closeModal").addEventListener("click", function () {
 document.getElementById("closeSuccess").addEventListener("click", function () {
   document.getElementById("successMessage").style.display = "none";
   document.querySelector(".container").style.display = "flex";
-  document.querySelector(".container").style.justifyContent = "center";
   document.querySelector(".container").style.alignItems = "center";
 });
 // #endregion
