@@ -251,4 +251,102 @@ document.getElementById("closeSuccess").addEventListener("click", function () {
   document.getElementById("successMessage").style.display = "none";
   document.querySelector(".location-btn").style.display = "flex";
 });
+
+// cities and provinces
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////jason file loading for the states and cities////////////////////////////////////////////////////
+let data;
+
+// Load the JSON data
+fetch("database/Iran-Cities.json")
+  .then((response) => response.json())
+  .then((jsonData) => {
+    data = jsonData;
+    populateProvinces();
+    loadSavedSelections();
+  })
+  .catch((error) => console.error("Error loading JSON:", error));
+
+// Populate the provinces dropdown
+function populateProvinces() {
+  const provinceSelect = document.getElementById("province");
+
+  // Add the default placeholder option for the province select
+  const defaultProvinceOption = document.createElement("option");
+  defaultProvinceOption.value = "";
+  defaultProvinceOption.textContent = "استان";
+  defaultProvinceOption.disabled = true;
+  provinceSelect.appendChild(defaultProvinceOption);
+
+  data.forEach((state) => {
+    const option = document.createElement("option");
+    option.value = state.state;
+    option.textContent = state.state;
+    provinceSelect.appendChild(option);
+  });
+}
+
+function updateCities() {
+  const provinceSelect = document.getElementById("province");
+  const citySelect = document.getElementById("city");
+  const selectedProvince = provinceSelect.value;
+
+  citySelect.innerHTML = ""; // Clear existing options
+
+  // Add the default placeholder option for the city select
+  const defaultCityOption = document.createElement("option");
+  defaultCityOption.value = "";
+  defaultCityOption.textContent = "شهر";
+  defaultCityOption.disabled = true;
+  citySelect.appendChild(defaultCityOption);
+
+  const selectedState = data.find((state) => state.state === selectedProvince);
+  if (selectedState) {
+    selectedState.cities.forEach((city) => {
+      const option = document.createElement("option");
+      option.value = city.name;
+      option.textContent = city.name;
+      citySelect.appendChild(option);
+    });
+  }
+
+  // Save selections to local storage
+  saveSelections();
+}
+
+function saveSelections() {
+  const provinceSelect = document.getElementById("province");
+  const citySelect = document.getElementById("city");
+
+  localStorage.setItem("selectedProvince", provinceSelect.value);
+  localStorage.setItem("selectedCity", citySelect.value);
+}
+
+function loadSavedSelections() {
+  const provinceSelect = document.getElementById("province");
+  const citySelect = document.getElementById("city");
+
+  const savedProvince = localStorage.getItem("selectedProvince");
+  const savedCity = localStorage.getItem("selectedCity");
+
+  if (savedProvince) {
+    provinceSelect.value = savedProvince;
+    updateCities();
+
+    if (savedCity) {
+      citySelect.value = savedCity;
+    }
+  }
+}
+
+// Event listeners
+document.getElementById("province").addEventListener("change", updateCities);
+document.getElementById("city").addEventListener("change", saveSelections);
+
+// Initial load
+window.onload = function () {
+  populateProvinces();
+  loadSavedSelections();
+};
+
 // #endregion

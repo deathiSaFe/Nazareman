@@ -194,16 +194,17 @@
                   class="search-radio"
                 />
               </div>
+
               <div class="content-container">
-                <select class="dropdown">
-                  <option>گزینه ۱</option>
-                  <option>گزینه ۲</option>
-                  <option>گزینه ۳</option>
+                <select
+                  class="dropdown"
+                  id="province"
+                  onchange="updateCities()"
+                >
+                  <option value="" disabled selected hidden>استان</option>
                 </select>
-                <select class="dropdown">
-                  <option>گزینه الف</option>
-                  <option>گزینه ب</option>
-                  <option>گزینه ج</option>
+                <select class="dropdown" id="city">
+                  <option value="" disabled selected hidden>شهر</option>
                 </select>
               </div>
             </div>
