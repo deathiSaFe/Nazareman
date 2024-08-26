@@ -286,11 +286,8 @@ function populateProvinces() {
   });
 }
 
-function updateCities() {
-  const provinceSelect = document.getElementById("province");
+function updateCities(selectedProvince, selectedCity = null) {
   const citySelect = document.getElementById("city");
-  const selectedProvince = provinceSelect.value;
-
   citySelect.innerHTML = ""; // Clear existing options
 
   // Add the default placeholder option for the city select
@@ -310,6 +307,11 @@ function updateCities() {
     });
   }
 
+  // If a selectedCity is provided, set it
+  if (selectedCity) {
+    citySelect.value = selectedCity;
+  }
+
   // Save selections to local storage
   saveSelections();
 }
@@ -324,23 +326,19 @@ function saveSelections() {
 
 function loadSavedSelections() {
   const provinceSelect = document.getElementById("province");
-  const citySelect = document.getElementById("city");
-
   const savedProvince = localStorage.getItem("selectedProvince");
   const savedCity = localStorage.getItem("selectedCity");
 
   if (savedProvince) {
     provinceSelect.value = savedProvince;
-    updateCities();
-
-    if (savedCity) {
-      citySelect.value = savedCity;
-    }
+    updateCities(savedProvince, savedCity);
   }
 }
 
 // Event listeners
-document.getElementById("province").addEventListener("change", updateCities);
+document.getElementById("province").addEventListener("change", function () {
+  updateCities(this.value);
+});
 document.getElementById("city").addEventListener("change", saveSelections);
 
 // Initial load
