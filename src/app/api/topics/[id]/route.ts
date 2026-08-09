@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { getCurrentUser } from '@/lib/auth';
+import { canEditTopic, canViewPendingTopic, requestIsAdmin } from '@/lib/authorization';
 import type { ContactPlatform } from '@/types/topic';
 
 export const runtime = 'nodejs';
@@ -96,7 +98,7 @@ function parseLinks(raw: unknown, errors: string[]): SubmittedLink[] {
 }
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   context: {
     params: Promise<{ id: string }>;
   }
@@ -136,6 +138,7 @@ export async function GET(
         scope: true,
         address: true,
         status: true,
+        submittedById: true,
         links: {
           select: {
             id: true,
@@ -189,6 +192,29 @@ export async function GET(
         { status: 404 }
       );
     }
+
+    // PENDING topics are only visible to the verified creator and admins.
+    // Everyone else gets a clean 404 so the page's existence stays hidden.
+    const currentUser = await getCurrentUser();
+    const admin = requestIsAdmin(request);
+
+    if (topic.status === 'PENDING' && !canViewPendingTopic(currentUser, topic, admin)) {
+      return NextResponse.json(
+        { error: 'Topic not found.' },
+        { status: 404 }
+      );
+    }
+
+    // Whether the signed-in user already left a comment on this topic — used by
+    // the UI to show «شما قبلاً نظر ثبت کرده‌اید» instead of a second form.
+    const hasCommented = currentUser
+      ? Boolean(
+          await prisma.comment.findFirst({
+            where: { topicId: topic.id, authorId: currentUser.id },
+            select: { id: true },
+          })
+        )
+      : false;
 
     // If topic is PENDING (creator viewing via UUID), show all comments.
     // If topic is APPROVED (public view), only show APPROVED comments.
@@ -252,6 +278,11 @@ export async function GET(
         value: link.value,
       })),
       comments: mappedComments,
+      permissions: {
+        canEdit: canEditTopic(currentUser, topic, admin),
+        canComment: Boolean(currentUser?.phoneVerified && !hasCommented),
+        hasCommented,
+      },
     });
   } catch (error) {
     console.error('Failed to fetch topic:', error);
@@ -269,8 +300,8 @@ export async function GET(
  * contribution fields: introduction, working hours, primary image, address and
  * the repeatable contact rows (phones / website / social links).
  *
- * FUTURE OWNERSHIP: this endpoint currently lets any visitor edit a page.
- * Once ownership is introduced, gate it behind the page's Creator/Owner.
+ * Only the verified original submitter (Topic.submittedById) or an admin may
+ * edit a page. Ownership/claims are a later phase.
  */
 export async function PATCH(
   request: NextRequest,
@@ -278,6 +309,10 @@ export async function PATCH(
     params: Promise<{ id: string }>;
   }
 ) {
+  // Resolve the actor from the server session + admin header, never the body.
+  const user = await getCurrentUser();
+  const admin = requestIsAdmin(request);
+
   let body: unknown;
 
   try {
@@ -296,24 +331,42 @@ export async function PATCH(
   const data = body as Record<string, unknown>;
   const errors: string[] = [];
 
-  const text = (key: string): string =>
-    typeof data[key] === 'string' ? (data[key] as string).trim() : '';
+  const has = (key: string): boolean => data[key] !== undefined;
 
-  const description = text('description');
-  const workingHours = text('workingHours');
-  const address = text('address');
-  const imageUrl = text('imageUrl');
+  // Partial update: only fields explicitly present in the body are changed.
+  // Otherwise a one-field save (e.g. the tour editing only the address) would
+  // silently null out every other field.
+  const description = has('description')
+    ? typeof data.description === 'string'
+      ? data.description.trim()
+      : ''
+    : undefined;
+  const workingHours = has('workingHours')
+    ? typeof data.workingHours === 'string'
+      ? data.workingHours.trim()
+      : ''
+    : undefined;
+  const address = has('address')
+    ? typeof data.address === 'string'
+      ? data.address.trim()
+      : ''
+    : undefined;
+  const imageUrl = has('imageUrl')
+    ? typeof data.imageUrl === 'string'
+      ? data.imageUrl.trim()
+      : ''
+    : undefined;
 
   const hasLinks = data.links !== undefined;
   const links = hasLinks ? parseLinks(data.links, errors) : [];
 
-  if (description.length > MAX_DESCRIPTION_LENGTH) {
+  if (description !== undefined && description.length > MAX_DESCRIPTION_LENGTH) {
     errors.push(`description must be ${MAX_DESCRIPTION_LENGTH} characters or fewer.`);
   }
-  if (workingHours.length > MAX_WORKING_HOURS_LENGTH) {
+  if (workingHours !== undefined && workingHours.length > MAX_WORKING_HOURS_LENGTH) {
     errors.push(`workingHours must be ${MAX_WORKING_HOURS_LENGTH} characters or fewer.`);
   }
-  if (address.length > MAX_ADDRESS_LENGTH) {
+  if (address !== undefined && address.length > MAX_ADDRESS_LENGTH) {
     errors.push(`address must be ${MAX_ADDRESS_LENGTH} characters or fewer.`);
   }
   if (imageUrl && !isValidHttpUrl(imageUrl)) {
@@ -341,22 +394,44 @@ export async function PATCH(
           ? [{ id: identifier }, { slug: identifier }]
           : [{ slug: identifier }],
       },
-      select: { id: true },
+      select: { id: true, submittedById: true },
     });
 
     if (!existing) {
       return NextResponse.json({ error: 'Page not found.' }, { status: 404 });
     }
 
+    if (!canEditTopic(user, existing, admin)) {
+      if (!user) {
+        return NextResponse.json(
+          { error: 'برای ویرایش این صفحه باید وارد حساب کاربری شوید.' },
+          { status: 401 }
+        );
+      }
+
+      if (!user.phoneVerified) {
+        return NextResponse.json(
+          { error: 'برای ویرایش این صفحه، شماره موبایل شما باید تأیید شده باشد.' },
+          { status: 403 }
+        );
+      }
+
+      return NextResponse.json(
+        { error: 'شما اجازه ویرایش این صفحه را ندارید.' },
+        { status: 403 }
+      );
+    }
+
+    const updateData: Record<string, unknown> = {};
+    if (description !== undefined) updateData.description = description || null;
+    if (workingHours !== undefined) updateData.workingHours = workingHours || null;
+    if (address !== undefined) updateData.address = address || null;
+    if (imageUrl !== undefined) updateData.imageUrl = imageUrl || null;
+
     const updated = await prisma.$transaction(async (tx) => {
       const topic = await tx.topic.update({
         where: { id: existing.id },
-        data: {
-          description: description || null,
-          workingHours: workingHours || null,
-          address: address || null,
-          imageUrl: imageUrl || null,
-        },
+        data: updateData,
         select: { id: true, slug: true },
       });
 

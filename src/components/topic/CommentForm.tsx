@@ -1,44 +1,27 @@
 'use client';
 
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useRef, useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 
 interface CommentFormProps {
   topicId: string;
-  /** Increment to scroll the form into view and focus the textarea on demand. */
-  focusRequest?: number;
-  /** Called with the created comment so the parent can update state live
-   *  and advance the guided tour. */
+  /** Called with the created comment so the parent can update state live. */
   onSubmitted?: (comment: {
     id: string;
     body: string;
     status: 'PENDING' | 'APPROVED' | 'REJECTED';
     createdAt: string;
   }) => void;
-  /** Lets the parent pause the tour while the comment textarea is focused. */
-  onFocusChange?: (focused: boolean) => void;
 }
 
-export function CommentForm({
-  topicId,
-  focusRequest = 0,
-  onSubmitted,
-  onFocusChange,
-}: CommentFormProps) {
+export function CommentForm({ topicId, onSubmitted }: CommentFormProps) {
   const router = useRouter();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const formRef = useRef<HTMLFormElement>(null);
 
   const [body, setBody] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-
-  useEffect(() => {
-    if (!focusRequest) return;
-    formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    textareaRef.current?.focus();
-  }, [focusRequest]);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -110,7 +93,6 @@ export function CommentForm({
 
   return (
     <form
-      ref={formRef}
       onSubmit={handleSubmit}
       noValidate
       className="mt-3 border-t border-ink-900/[0.08] pt-3"
@@ -130,8 +112,6 @@ export function CommentForm({
             setSuccessMessage(null);
           }
         }}
-        onFocus={() => onFocusChange?.(true)}
-        onBlur={() => onFocusChange?.(false)}
         rows={3}
         placeholder="نظر خود را بنویسید..."
         aria-label="متن نظر"

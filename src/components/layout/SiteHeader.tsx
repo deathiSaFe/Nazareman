@@ -4,8 +4,9 @@ import React, { useState, useEffect } from 'react';
 import BrandMark from './BrandMark';
 import HamburgerButton from './HamburgerButton';
 import MobileMenu from './MobileMenu';
+import type { PublicUser } from '@/lib/auth';
 
-export default function SiteHeader() {
+export default function SiteHeader({ user }: { user: PublicUser | null }) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
 
   useEffect(() => {
@@ -35,7 +36,7 @@ export default function SiteHeader() {
       </header>
 
       {/* MobileMenu - rendered OUTSIDE the header to avoid stacking context issues */}
-      <MobileMenu isOpen={isMenuOpen} onClose={handleCloseMenu} />
+      <MobileMenu isOpen={isMenuOpen} onClose={handleCloseMenu} user={user} />
     </>
   );
 }

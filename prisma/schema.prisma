@@ -53,16 +53,37 @@ enum ContactPlatform {
 }
 
 model User {
-  id          String   @id @default(uuid()) @db.Uuid
-  role        UserRole @default(USER)
-  phone       String?  @unique
-  displayName String?
-  createdAt   DateTime @default(now())
+  id            String    @id @default(uuid()) @db.Uuid
+  phoneNumber   String    @unique
+  displayName   String?
+  phoneVerified Boolean   @default(false)
+  role          UserRole  @default(USER)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
+  sessions       Session[]
   topics         Topic[]
   comments       Comment[]
   submissions    Submission[]
   moderationLogs ModerationLog[]
+}
+
+/**
+ * Server-recognized session. The browser holds an opaque random token in an
+ * HttpOnly cookie; only its SHA-256 hash is stored here, so a DB leak never
+ * exposes usable sessions. Expiry is enforced at lookup time.
+ */
+model Session {
+  id        String   @id @default(uuid()) @db.Uuid
+  tokenHash String   @unique
+  userId    String   @db.Uuid
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
 }
 
 model Province {

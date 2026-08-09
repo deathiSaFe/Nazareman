@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { prisma } from '@/lib/prisma';
+import { PermissionError, requireVerifiedUser } from '@/lib/authorization';
 import type { LocationScope, TopicTypeKind } from '@/types/topic';
 
 export const runtime = 'nodejs';
@@ -112,6 +113,20 @@ function parseTypes(raw: unknown, errors: string[]): SubmittedType[] {
 }
 
 export async function POST(request: NextRequest) {
+  // Submitting a topic requires a signed-in, phone-verified user. The creator
+  // is always taken from the server session — never from the request body.
+  let user;
+
+  try {
+    user = await requireVerifiedUser();
+  } catch (error) {
+    if (error instanceof PermissionError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+
+    return NextResponse.json({ error: 'Failed to submit topic.' }, { status: 500 });
+  }
+
   let body: unknown;
 
   try {
@@ -232,6 +247,7 @@ export async function POST(request: NextRequest) {
           cityId,
           address: locationScope === 'ADDRESS' ? address : null,
           status: 'PENDING',
+          submittedById: user.id,
         },
         select: { id: true, slug: true },
       });
@@ -259,7 +275,7 @@ export async function POST(request: NextRequest) {
       }
 
       await tx.submission.create({
-        data: { topicId: topic.id, status: 'PENDING' },
+        data: { topicId: topic.id, status: 'PENDING', submittedById: user.id },
       });
 
       if (firstComment) {

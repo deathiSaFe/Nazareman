@@ -2,22 +2,18 @@
 
 import React, { useEffect } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import type { PublicUser } from '@/lib/auth';
 
 interface MobileMenuProps {
   isOpen: boolean;
   onClose: () => void;
+  user: PublicUser | null;
 }
 
-const menuItems = [
-  { label: 'پروفایل', href: '/profile', icon: '👤' },
-  { label: 'موضوعات من', href: '/my-topics', icon: '📝' },
-  { label: 'درباره ما', href: '/about', icon: 'ℹ️' },
-  { label: 'تماس', href: '/contact', icon: '📧' },
-  { label: 'تنظیمات', href: '/settings', icon: '⚙️' },
-  { label: 'حریم خصوصی', href: '/privacy', icon: '🔒' },
-];
+export default function MobileMenu({ isOpen, onClose, user }: MobileMenuProps) {
+  const router = useRouter();
 
-export default function MobileMenu({ isOpen, onClose }: MobileMenuProps) {
   useEffect(() => {
     if (isOpen) {
       document.body.style.overflow = 'hidden';
@@ -38,6 +34,24 @@ export default function MobileMenu({ isOpen, onClose }: MobileMenuProps) {
     document.addEventListener('keydown', handleEscape);
     return () => document.removeEventListener('keydown', handleEscape);
   }, [isOpen, onClose]);
+
+  async function handleLogout() {
+    await fetch('/api/auth/logout', { method: 'POST' }).catch(() => undefined);
+    onClose();
+    router.push('/');
+    router.refresh();
+  }
+
+  const menuItems = [
+    ...(user
+      ? [{ label: 'پروفایل من', href: '/profile', icon: '👤' }]
+      : [{ label: 'ورود / ثبت‌نام', href: '/login', icon: '🔑' }]),
+    { label: 'موضوعات من', href: '/my-topics', icon: '📝' },
+    { label: 'درباره ما', href: '/about', icon: 'ℹ️' },
+    { label: 'تماس', href: '/contact', icon: '📧' },
+    { label: 'تنظیمات', href: '/settings', icon: '⚙️' },
+    { label: 'حریم خصوصی', href: '/privacy', icon: '🔒' },
+  ];
 
   return (
     <>
@@ -82,9 +96,32 @@ export default function MobileMenu({ isOpen, onClose }: MobileMenuProps) {
             </button>
           </div>
 
+          {/* Signed-in state */}
+          {user && (
+            <div className="flex items-center justify-between gap-3 border-b border-gray-200 px-4 py-3">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold text-gray-900">
+                  {user.displayName || 'کاربر'}
+                </p>
+                <p dir="ltr" className="truncate text-xs text-gray-500">
+                  {user.phoneNumber}
+                </p>
+              </div>
+              <span
+                className={`shrink-0 rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
+                  user.phoneVerified
+                    ? 'bg-emerald-600/10 text-emerald-700'
+                    : 'bg-saffron-500/10 text-saffron-700'
+                }`}
+              >
+                {user.phoneVerified ? 'شماره تأیید شده' : 'تأیید نشده'}
+              </span>
+            </div>
+          )}
+
           {/* Nav */}
           <nav className="p-4 flex-1">
-            <ul className="space-y-2 h-full flex flex-col justify-center">
+            <ul className="space-y-2">
               {menuItems.map((item) => (
                 <li key={item.href}>
                   <Link
@@ -101,6 +138,19 @@ export default function MobileMenu({ isOpen, onClose }: MobileMenuProps) {
                   </Link>
                 </li>
               ))}
+
+              {user && (
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => void handleLogout()}
+                    className="flex w-full items-center gap-3 p-4 rounded-xl hover:bg-red-50 transition-all duration-200 text-start"
+                  >
+                    <span className="text-2xl">🚪</span>
+                    <span className="text-base font-medium text-red-700">خروج</span>
+                  </button>
+                </li>
+              )}
             </ul>
           </nav>
         </div>

@@ -1,4 +1,5 @@
 ﻿import { headers } from 'next/headers';
+import { cookies } from 'next/headers';
 import { notFound } from 'next/navigation';
 import { PageView } from '@/components/page/PageView';
 import type { PageData, PageLink } from '@/types/topic';
@@ -20,9 +21,17 @@ export default async function TopicDetailPage({
   let response: Response;
 
   try {
+    // Forward the session cookie explicitly so the API resolves the SAME viewer
+    // as this page (relying on Next to auto-forward it to an internal absolute
+    // URL is unreliable). This is what lets the creator view their PENDING page.
+    const cookieString = (await cookies()).toString();
+
     response = await fetch(
       `${baseUrl}/api/topics/${encodeURIComponent(id)}`,
-      { cache: 'no-store' }
+      {
+        cache: 'no-store',
+        ...(cookieString ? { headers: { cookie: cookieString } } : {}),
+      }
     );
   } catch {
     return (
@@ -102,10 +111,20 @@ export default async function TopicDetailPage({
     })),
   };
 
+  const canEdit = Boolean(
+    (topic.permissions as { canEdit?: boolean } | undefined)?.canEdit
+  );
+  const canComment = Boolean(
+    (topic.permissions as { canComment?: boolean } | undefined)?.canComment
+  );
+  const hasCommented = Boolean(
+    (topic.permissions as { hasCommented?: boolean } | undefined)?.hasCommented
+  );
+
   return (
     <main className="min-h-screen bg-paper pb-10">
       <div className="mx-auto w-full max-w-3xl px-4 py-4 sm:px-5 sm:py-6">
-        <PageView page={page} />
+        <PageView page={page} editable={canEdit} canComment={canComment} hasCommented={hasCommented} />
       </div>
     </main>
   );

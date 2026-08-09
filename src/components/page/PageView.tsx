@@ -1,13 +1,13 @@
-﻿'use client';
+'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
 import { CheckIcon, PenIcon, PlusIcon, XIcon } from '@/components/icons';
 import { ContactIcon } from '@/components/contact-icons';
 import { ActivityAreaPicker } from '@/components/add-topic/ActivityAreaPicker';
 import { TopicTypesField } from '@/components/add-topic/TopicTypesField';
 import { CommentForm } from '@/components/topic/CommentForm';
-import { TourOverlay, type TourAction, type TourStepContent } from '@/components/page/TourOverlay';
+import { OnboardingPopup } from '@/components/page/OnboardingPopup';
 import {
   CONTACT_PLATFORM_LABELS,
   type ActivityAreaValue,
@@ -19,8 +19,12 @@ import {
 interface PageViewProps {
   page: PageData;
   /** Show the inline contribution editors (image/intro/hours/contact/social/address).
-   *  True for everyone for now; later gated behind ownership. */
+   *  True for the verified creator/admin; otherwise false. */
   editable?: boolean;
+  /** Whether the viewer may submit a new comment (signed-in + phone-verified). */
+  canComment?: boolean;
+  /** Whether the viewer already left a comment on this page. */
+  hasCommented?: boolean;
   /** Admin mode: additionally exposes identity editing, publish controls and
    *  inline moderation. */
   admin?: boolean;
@@ -31,43 +35,6 @@ const SOCIAL_PLATFORMS = (
 ).filter((platform) => platform !== 'WEBSITE' && platform !== 'PHONE');
 
 type DraftLink = { platform: ContactPlatform; label: string | null; value: string };
-
-/** Guided onboarding tour — order of the Topic-page areas (name/type are fixed). */
-const TOUR_TOTAL = 7; // 6 content steps + final submission
-const TOUR_ORDER = ['image', 'intro', 'hours', 'address', 'contact', 'comment'] as const;
-type TourKey = (typeof TOUR_ORDER)[number];
-
-/**
- * Build the tour sequence from the initial page data: already-complete areas are
- * skipped automatically (the address step always runs when the location is
- * relevant). Returns an empty sequence when everything is complete.
- */
-function buildTourSequenceFromPage(p: PageData): { key: TourKey; originalIndex: number }[] {
-  const showAddress = p.scope !== 'NATIONAL';
-
-  const complete: Record<TourKey, boolean> = {
-    image: Boolean(p.imageUrl),
-    intro: Boolean(p.description?.trim()),
-    hours: Boolean(p.workingHours?.trim()),
-    address: Boolean(p.address?.trim()) || !showAddress,
-    contact: p.links.length > 0,
-    comment: p.comments.length > 0,
-  };
-
-  if (TOUR_ORDER.every((key) => complete[key])) return [];
-
-  const steps: { key: TourKey; originalIndex: number }[] = [];
-
-  TOUR_ORDER.forEach((key, originalIndex) => {
-    if (key === 'address') {
-      if (showAddress) steps.push({ key, originalIndex });
-    } else if (!complete[key]) {
-      steps.push({ key, originalIndex });
-    }
-  });
-
-  return steps;
-}
 
 const inputClass =
   'w-full rounded-2xl bg-white px-4 py-3 text-[15px] font-medium text-ink-900 outline-none ring-1 ring-ink-900/10 transition-all duration-200 placeholder:font-normal placeholder:text-ink-900/30 focus:ring-2 focus:ring-turquoise-600/70';
@@ -114,9 +81,22 @@ function persianNumber(value: number | string): string {
   return String(value).replace(/\d/g, (digit) => '۰۱۲۳۴۵۶۷۸۹'[Number(digit)]);
 }
 
-function scrollToId(id: string) {
-  if (typeof window === 'undefined') return;
-  document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+/** Session key that remembers the onboarding popup was dismissed this session. */
+const onboardingDismissedKey = (topicId: string) => `nazareman_onboarding_dismissed_${topicId}`;
+
+/** sessionStorage doesn't emit same-tab events; an empty subscription suffices. */
+function subscribeSessionStorage(): () => void {
+  return () => {};
+}
+
+/** Whether the onboarding popup was dismissed in this tab session. */
+function readOnboardingDismissed(topicId: string): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return Boolean(window.sessionStorage.getItem(onboardingDismissedKey(topicId)));
+  } catch {
+    return false;
+  }
 }
 
 /** A compact, inviting add-action — used for empty sections. */
@@ -266,7 +246,7 @@ function ContactRow({
   );
 }
 
-export function PageView({ page, editable = true, admin = false }: PageViewProps) {
+export function PageView({ page, editable = true, canComment = true, hasCommented = false, admin = false }: PageViewProps) {
   const [name, setName] = useState(page.name);
   const [description, setDescription] = useState(page.description ?? '');
   const [workingHours, setWorkingHours] = useState(page.workingHours ?? '');
@@ -304,9 +284,9 @@ export function PageView({ page, editable = true, admin = false }: PageViewProps
   const [addressOpen, setAddressOpen] = useState(false);
   const [identityOpen, setIdentityOpen] = useState(false);
 
-  // Comment form (always visible); track focus + on-demand focus requests.
-  const [commentFocused, setCommentFocused] = useState(false);
-  const [commentFocusRequest, setCommentFocusRequest] = useState(0);
+  // Once a comment is submitted, replace the form with the «already commented»
+  // state immediately (the server enforces the one-comment-per-topic rule).
+  const [commentSubmitted, setCommentSubmitted] = useState(false);
 
   // Contact editor (add or edit one row)
   const [contactDraft, setContactDraft] = useState<{ platform: ContactPlatform; label: string; value: string }>({
@@ -317,15 +297,40 @@ export function PageView({ page, editable = true, admin = false }: PageViewProps
   const [contactEditIndex, setContactEditIndex] = useState<number | null>(null);
   const [contactAddOpen, setContactAddOpen] = useState(false);
 
-  // Guided onboarding tour (starts once when a PENDING page opens).
-  const [tour, setTour] = useState<{
-    active: boolean;
-    steps: { key: TourKey; originalIndex: number }[];
-    index: number;
-  } | null>(() => {
-    if (admin || page.status !== 'PENDING') return null;
-    return { active: true, steps: buildTourSequenceFromPage(page), index: 0 };
-  });
+  // One-time onboarding nudge for a newly-created PENDING page: it encourages
+  // the creator to complete the info and leave the first comment. It is skipped
+  // when the page is already complete, and dismissal is remembered in
+  // sessionStorage so it does not reappear during the same editing session.
+  // `useSyncExternalStore` keeps this SSR-safe (the server snapshot is «not
+  // dismissed»), so no hydration mismatch occurs.
+  const onboardingAlreadyComplete = (() => {
+    const showAddress = page.scope !== 'NATIONAL';
+    return (
+      Boolean(page.imageUrl) &&
+      Boolean(page.description?.trim()) &&
+      Boolean(page.workingHours?.trim()) &&
+      (Boolean(page.address?.trim()) || !showAddress) &&
+      page.links.length > 0 &&
+      page.comments.length > 0
+    );
+  })();
+  const onboardingDismissed = useSyncExternalStore(
+    subscribeSessionStorage,
+    () => readOnboardingDismissed(page.id),
+    () => false
+  );
+  const [onboardingDismissedNow, setOnboardingDismissedNow] = useState(false);
+  const onboardingOpen =
+    !admin && page.status === 'PENDING' && !onboardingAlreadyComplete && !onboardingDismissed && !onboardingDismissedNow;
+
+  function dismissOnboarding() {
+    setOnboardingDismissedNow(true);
+    try {
+      window.sessionStorage.setItem(onboardingDismissedKey(page.id), '1');
+    } catch {
+      // ignore — the popup simply stays dismissed for this render session.
+    }
+  }
 
   // Final submission
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -350,6 +355,19 @@ export function PageView({ page, editable = true, admin = false }: PageViewProps
     const timer = window.setTimeout(() => setMessage(null), 2500);
     return () => window.clearTimeout(timer);
   }, [message]);
+
+  // The success screen replaces the page content; make sure it opens at the top
+  // so the user immediately sees the success message/header. Run after layout so
+  // it survives any scroll-anchoring or browser scroll restoration.
+  useEffect(() => {
+    if (!submitted) return;
+    const raf = requestAnimationFrame(() => {
+      window.scrollTo(0, 0);
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [submitted]);
 
   useEffect(() => {
     if (introExpanded || !introRef.current) return;
@@ -399,215 +417,8 @@ export function PageView({ page, editable = true, admin = false }: PageViewProps
     return undefined;
   };
 
-  // ——— Tour state ———
-  const tourActive = tour?.active ?? false;
-  const tourSteps = tour?.steps ?? [];
-  const tourIndex = tour?.index ?? 0;
-  const tourIsFinal = tourActive && tourIndex >= tourSteps.length;
-  const tourKey: TourKey | null =
-    !tourIsFinal && tourIndex < tourSteps.length ? tourSteps[tourIndex].key : null;
-
-  const showSendButton = !admin && status === 'PENDING' && !submitted && !tourActive;
-
-  /** The tour steps aside while a tour-relevant editor is open, so the user can
-   *  actually use it without the overlay blocking it. */
-  const tourPaused =
-    imageOpen ||
-    introOpen ||
-    hoursOpen ||
-    addressOpen ||
-    contactAddOpen ||
-    contactEditIndex !== null ||
-    commentFocused;
-
-  function goNext() {
-    setTour((current) =>
-      current ? { ...current, index: Math.min(current.index + 1, current.steps.length) } : current
-    );
-  }
-
-  function goBack() {
-    setTour((current) =>
-      current ? { ...current, index: Math.max(current.index - 1, 0) } : current
-    );
-  }
-
-  function closeTour() {
-    setTour(null);
-  }
-
-  /** Advance the tour when the given step's content is saved/submitted. */
-  function completeStep(key: TourKey) {
-    setTour((current) => {
-      if (!current) return current;
-      const currentStep = current.steps[current.index];
-      if (!currentStep || currentStep.key !== key) return current;
-      return { ...current, index: Math.min(current.index + 1, current.steps.length) };
-    });
-  }
-
-  const addressDone = Boolean(address.trim()) || activity.scope === 'NATIONAL';
-  const completionPercent = (() => {
-    const done = [
-      Boolean(imageUrl),
-      Boolean(description.trim()),
-      Boolean(workingHours.trim()),
-      addressDone,
-      links.length > 0,
-      comments.length > 0,
-    ];
-    return Math.round((done.filter(Boolean).length / done.length) * 100);
-  })();
-
-  function currentTourStepContent(): TourStepContent {
-    const backAction: TourAction = { label: 'قبلی', onClick: goBack };
-    const nextAction: TourAction = { label: 'بعدی', onClick: goNext };
-    const hasBack = tourIndex > 0;
-
-    if (tourIsFinal) {
-      return {
-        targetId: null,
-        title: 'بررسی و ارسال اطلاعات',
-        message: 'اطلاعات صفحه را بررسی کنید و در صورت آماده بودن آن را ارسال کنید.',
-        stepLabel: `مرحله ${persianNumber(TOUR_TOTAL)} از ${persianNumber(TOUR_TOTAL)}`,
-        actions: [
-          {
-            label: 'بررسی و ارسال اطلاعات',
-            onClick: () => {
-              closeTour();
-              setConfirmOpen(true);
-            },
-          },
-          backAction,
-        ],
-      };
-    }
-
-    if (!tourKey) {
-      return { targetId: null, title: '', message: '', stepLabel: null, actions: [] };
-    }
-
-    const originalIndex = tourSteps[tourIndex].originalIndex;
-    const stepLabel = `مرحله ${persianNumber(originalIndex + 1)} از ${persianNumber(TOUR_TOTAL)}`;
-
-    switch (tourKey) {
-      case 'image': {
-        const hasImage = Boolean(imageUrl);
-        return {
-          targetId: 'tour-image',
-          title: 'تصویر',
-          message: hasImage
-            ? 'تصویر صفحه اضافه شده است. در صورت نیاز می‌توانید آن را تغییر دهید.'
-            : 'یک تصویر به صفحه اضافه کنید تا موضوع شما راحت‌تر شناخته شود.',
-          stepLabel,
-          actions: [
-            {
-              label: hasImage ? 'تغییر تصویر' : 'افزودن تصویر',
-              onClick: () => {
-                setImageOpen(true);
-                scrollToId('page-hero');
-              },
-            },
-            ...(hasBack ? [backAction] : []),
-            nextAction,
-          ],
-        };
-      }
-
-      case 'intro': {
-        const hasIntro = Boolean(description.trim());
-        return {
-          targetId: 'page-intro',
-          title: 'معرفی',
-          message: hasIntro
-            ? 'معرفی ثبت شده است. می‌توانید آن را بازبینی یا ویرایش کنید.'
-            : 'یک معرفی کوتاه درباره این موضوع بنویسید تا بازدیدکنندگان بهتر با آن آشنا شوند.',
-          stepLabel,
-          actions: [
-            {
-              label: hasIntro ? 'ویرایش معرفی' : 'نوشتن معرفی',
-              onClick: () => setIntroOpen(true),
-            },
-            ...(hasBack ? [backAction] : []),
-            nextAction,
-          ],
-        };
-      }
-
-      case 'hours': {
-        const hasHours = Boolean(workingHours.trim());
-        return {
-          targetId: 'page-info',
-          title: 'ساعات کاری',
-          message: hasHours
-            ? 'ساعات کاری ثبت شده است. در صورت نیاز می‌توانید آن را ویرایش کنید.'
-            : 'ساعات کاری به بازدیدکنندگان کمک می‌کند بدانند چه زمانی در دسترس هستید.',
-          stepLabel,
-          actions: [
-            {
-              label: hasHours ? 'ویرایش ساعات کاری' : 'افزودن ساعات کاری',
-              onClick: () => setHoursOpen(true),
-            },
-            ...(hasBack ? [backAction] : []),
-            nextAction,
-          ],
-        };
-      }
-
-      case 'address':
-        return {
-          targetId: 'page-info',
-          title: 'محدوده / آدرس',
-          message: addressLabel
-            ? 'آدرس فعلی را بررسی کنید و در صورت نیاز جزئیات بیشتری اضافه کنید.'
-            : 'محدوده یا آدرس فعالیت را اضافه کنید تا افراد راحت‌تر شما را پیدا کنند.',
-          stepLabel,
-          actions: [
-            { label: 'ویرایش آدرس', onClick: () => setAddressOpen(true) },
-            ...(hasBack ? [backAction] : []),
-            nextAction,
-          ],
-        };
-
-      case 'contact':
-        return {
-          targetId: 'page-info',
-          title: 'راه‌های ارتباطی',
-          message:
-            links.length > 0
-              ? 'یک راه ارتباطی اضافه شد. می‌توانید شماره‌های دیگر، موبایل، وب‌سایت یا شبکه‌های اجتماعی بیشتری اضافه کنید.'
-              : 'راه‌های ارتباطی خود را اضافه کنید؛ تلفن، موبایل، وب‌سایت و شبکه‌های اجتماعی. می‌توانید چند راه ارتباطی اضافه کنید.',
-          stepLabel,
-          actions: [
-            { label: 'افزودن راه ارتباطی', onClick: startContactAdd },
-            ...(hasBack ? [backAction] : []),
-            nextAction,
-          ],
-        };
-
-      case 'comment': {
-        const hasComment = comments.length > 0;
-        return {
-          targetId: 'page-comments',
-          title: 'اولین نظر',
-          message: hasComment
-            ? 'اولین نظر شما ثبت شد. می‌توانید نظر دیگری هم اضافه کنید.'
-            : 'حالا اولین نظر را ثبت کنید تا صفحه شما زنده‌تر و مفیدتر شود. اولین نظر به بازدیدکنندگان کمک می‌کند با موضوع آشنا شوند.',
-          stepLabel,
-          actions: [
-            { label: hasComment ? 'ثبت نظر دیگر' : 'ثبت اولین نظر', onClick: handleFirstComment },
-            ...(hasBack ? [backAction] : []),
-            nextAction,
-          ],
-        };
-      }
-    }
-  }
-
-  function handleFirstComment() {
-    setCommentFocusRequest((request) => request + 1);
-    scrollToId('page-comments');
-  }
+  // ——— Final review/submission ———
+  const showSendButton = !admin && status === 'PENDING' && !submitted;
 
   function handleCommentSubmitted(comment: {
     id: string;
@@ -616,7 +427,11 @@ export function PageView({ page, editable = true, admin = false }: PageViewProps
     createdAt: string;
   }) {
     setComments((prev) => [...prev, comment]);
-    completeStep('comment');
+    // A user may only comment once per topic, so a successful submission marks
+    // the «اولین نظر» step complete and the bar moves to the final review step
+    // (derived from `comments.length`). The form is replaced right away so the
+    // server-side one-comment rule and the refresh agree.
+    setCommentSubmitted(true);
   }
 
   async function handleConfirmSubmit() {
@@ -638,6 +453,9 @@ export function PageView({ page, editable = true, admin = false }: PageViewProps
       setConfirmOpen(false);
       clearFeedback();
       setSubmitted(true);
+      // Scroll immediately so the success screen starts at the top regardless
+      // of where the confirm action was clicked.
+      window.scrollTo(0, 0);
     }
   }
 
@@ -819,7 +637,6 @@ export function PageView({ page, editable = true, admin = false }: PageViewProps
     const ok = await savePage({ imageUrl: imageUrl.trim() });
     if (ok) {
       setImageOpen(false);
-      completeStep('image');
     }
   };
 
@@ -827,7 +644,6 @@ export function PageView({ page, editable = true, admin = false }: PageViewProps
     const ok = await savePage({ description: description.trim() });
     if (ok) {
       setIntroOpen(false);
-      completeStep('intro');
     }
   };
 
@@ -835,7 +651,6 @@ export function PageView({ page, editable = true, admin = false }: PageViewProps
     const ok = await savePage({ workingHours: workingHours.trim() });
     if (ok) {
       setHoursOpen(false);
-      completeStep('hours');
     }
   };
 
@@ -843,7 +658,6 @@ export function PageView({ page, editable = true, admin = false }: PageViewProps
     const ok = await savePage({ address: address.trim() });
     if (ok) {
       setAddressOpen(false);
-      completeStep('address');
     }
   };
 
@@ -940,8 +754,6 @@ export function PageView({ page, editable = true, admin = false }: PageViewProps
     );
   }
 
-  const tourContent = tourActive ? currentTourStepContent() : null;
-
   return (
     <div className="space-y-4">
       {(admin || status !== 'APPROVED') && (
@@ -972,7 +784,7 @@ export function PageView({ page, editable = true, admin = false }: PageViewProps
         </div>
       )}
 
-      {/* ————————————————— HERO / IDENTITY ————————————————— */}
+      {/* ————————————————— TOPIC INFORMATION — ONE unified card ————————————————— */}
       <article className="overflow-hidden rounded-[28px] bg-white ring-1 ring-ink-900/[0.06] shadow-[0_10px_30px_-14px_rgba(21,67,63,0.3)]">
         <div id="page-hero" className="relative scroll-mt-20">
           {imageUrl ? (
@@ -1065,7 +877,7 @@ export function PageView({ page, editable = true, admin = false }: PageViewProps
         </div>
 
         {(editable && imageOpen) || admin ? (
-          <div className="p-4 md:p-5">
+          <div className="border-t border-ink-900/[0.06] p-4 md:p-5">
             {editable && imageOpen && (
               <InlineEditor onSave={() => void saveImage()} onCancel={() => setImageOpen(false)} saving={saving}>
                 <input
@@ -1198,72 +1010,72 @@ export function PageView({ page, editable = true, admin = false }: PageViewProps
             )}
           </div>
         ) : null}
-      </article>
+        {/* ————————————————— INTRODUCTION ————————————————— */}
+        <section
+          id="page-intro"
+          className="scroll-mt-20 border-t border-ink-900/[0.06] px-4 py-4 md:px-5"
+        >
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-[12px] font-bold text-ink-500">معرفی</span>
+          </div>
 
-      {/* ————————————————— INTRODUCTION ————————————————— */}
-      <section
-        id="page-intro"
-        className="scroll-mt-20 rounded-2xl border border-ink-900/10 bg-white px-4 py-3 md:px-5"
-      >
-        <div className="mb-2 flex items-center justify-between gap-3">
-          <span className="text-[12px] font-bold text-ink-500">معرفی</span>
-          {editable && !introOpen && (
-            <EditButton label="ویرایش معرفی" onClick={() => setIntroOpen(true)} />
-          )}
-        </div>
+          <div className="mt-3 border-t border-ink-900/[0.06] pt-3">
+            {description ? (
+              editable && introOpen ? (
+                <InlineEditor onSave={() => void saveIntro()} onCancel={() => setIntroOpen(false)} saving={saving}>
+                  <textarea
+                    value={description}
+                    onChange={(event) => setDescription(event.target.value)}
+                    rows={12}
+                    maxLength={2000}
+                    className={`${inputClass} resize-y leading-7`}
+                  />
+                </InlineEditor>
+              ) : (
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <p
+                      ref={introRef}
+                      className={`${introExpanded ? '' : 'line-clamp-3'} whitespace-pre-line break-words text-[14px] leading-7 text-ink-700`}
+                    >
+                      {description}
+                    </p>
+                    {introCanExpand && (
+                      <button
+                        type="button"
+                        onClick={() => setIntroExpanded((open) => !open)}
+                        className="mt-1 text-[12px] font-semibold text-turquoise-700 transition-colors hover:text-turquoise-800"
+                      >
+                        {introExpanded ? 'کمتر' : 'بیشتر'}
+                      </button>
+                    )}
+                  </div>
+                  {editable && <EditButton label="ویرایش معرفی" onClick={() => setIntroOpen(true)} />}
+                </div>
+              )
+            ) : editable ? (
+              introOpen ? (
+                <InlineEditor onSave={() => void saveIntro()} onCancel={() => setIntroOpen(false)} saving={saving}>
+                  <textarea
+                    value={description}
+                    onChange={(event) => setDescription(event.target.value)}
+                    rows={12}
+                    maxLength={2000}
+                    placeholder="درباره این صفحه بنویسید..."
+                    className={`${inputClass} resize-y leading-7`}
+                  />
+                </InlineEditor>
+              ) : (
+                <CompactInvite label="افزودن معرفی" onClick={() => setIntroOpen(true)} />
+              )
+            ) : (
+              <p className="text-[14px] text-ink-400">معرفی‌ای ثبت نشده است.</p>
+            )}
+          </div>
+        </section>
 
-        {description ? (
-          editable && introOpen ? (
-            <InlineEditor onSave={() => void saveIntro()} onCancel={() => setIntroOpen(false)} saving={saving}>
-              <textarea
-                value={description}
-                onChange={(event) => setDescription(event.target.value)}
-                rows={12}
-                maxLength={2000}
-                className={`${inputClass} resize-y leading-7`}
-              />
-            </InlineEditor>
-          ) : (
-            <>
-              <p
-                ref={introRef}
-                className={`${introExpanded ? '' : 'line-clamp-3'} whitespace-pre-line break-words text-[14px] leading-7 text-ink-700`}
-              >
-                {description}
-              </p>
-              {introCanExpand && (
-                <button
-                  type="button"
-                  onClick={() => setIntroExpanded((open) => !open)}
-                  className="mt-1 text-[12px] font-semibold text-turquoise-700 transition-colors hover:text-turquoise-800"
-                >
-                  {introExpanded ? 'کمتر' : 'بیشتر'}
-                </button>
-              )}
-            </>
-          )
-        ) : editable ? (
-          introOpen ? (
-            <InlineEditor onSave={() => void saveIntro()} onCancel={() => setIntroOpen(false)} saving={saving}>
-              <textarea
-                value={description}
-                onChange={(event) => setDescription(event.target.value)}
-                rows={12}
-                maxLength={2000}
-                placeholder="درباره این صفحه بنویسید..."
-                className={`${inputClass} resize-y leading-7`}
-              />
-            </InlineEditor>
-          ) : (
-            <CompactInvite label="افزودن معرفی" onClick={() => setIntroOpen(true)} />
-          )
-        ) : (
-          <p className="text-[14px] text-ink-400">معرفی‌ای ثبت نشده است.</p>
-        )}
-      </section>
-
-      {/* ————————————————— IMPORTANT INFORMATION & CONTACTS ————————————————— */}
-      <section id="page-info" className="scroll-mt-20 rounded-2xl border border-ink-900/10 bg-white px-4 py-3 md:px-5">
+        {/* ————————————————— AREA / HOURS / ADDRESS / CONTACTS ————————————————— */}
+        <section id="page-info" className="scroll-mt-20 border-t border-ink-900/[0.06] px-4 py-4 md:px-5">
         <dl className="divide-y divide-ink-900/[0.06]">
           <InfoRow
             label="محدوده خدمات‌دهی"
@@ -1398,11 +1210,12 @@ export function PageView({ page, editable = true, admin = false }: PageViewProps
 
           {editable && contactEditIndex === null && !contactAddOpen && (
             <div className="py-2">
-              <CompactInvite label="افزودن راه ارتباطی" onClick={startContactAdd} />
+              <CompactInvite label="تماس" onClick={startContactAdd} />
             </div>
           )}
         </div>
-      </section>
+        </section>
+      </article>
 
       {/* ————————————————— COMMENTS ————————————————— */}
       <section
@@ -1527,14 +1340,27 @@ export function PageView({ page, editable = true, admin = false }: PageViewProps
           </div>
         )}
 
-        <div className="mt-2">
-          <CommentForm
-            topicId={page.id}
-            focusRequest={commentFocusRequest}
-            onSubmitted={handleCommentSubmitted}
-            onFocusChange={setCommentFocused}
-          />
-        </div>
+        {canComment && !commentSubmitted ? (
+          <div className="mt-2">
+            <CommentForm topicId={page.id} onSubmitted={handleCommentSubmitted} />
+          </div>
+        ) : hasCommented || commentSubmitted ? (
+          <div className="mt-3 rounded-xl border border-dashed border-ink-900/20 bg-white/50 px-4 py-3 text-center">
+            <p className="text-[13px] leading-6 text-ink-600">
+              شما قبلاً نظر خود را برای این صفحه ثبت کرده‌اید.
+            </p>
+          </div>
+        ) : (
+          <div className="mt-3 rounded-xl border border-dashed border-ink-900/20 bg-white/50 px-4 py-3 text-center">
+            <p className="text-[13px] leading-6 text-ink-600">
+              برای ثبت نظر باید{' '}
+              <Link href="/login" className="font-bold text-turquoise-700 underline-offset-4 hover:underline">
+                وارد حساب کاربری
+              </Link>{' '}
+              شوید.
+            </p>
+          </div>
+        )}
       </section>
 
       {/* ————————————————— FINAL SUBMISSION ————————————————— */}
@@ -1545,15 +1371,13 @@ export function PageView({ page, editable = true, admin = false }: PageViewProps
             onClick={() => setConfirmOpen(true)}
             className="flex w-full items-center justify-center gap-2 rounded-full bg-turquoise-600 px-7 py-3.5 text-[15px] font-bold text-white shadow-[0_10px_24px_-10px_rgba(26,99,93,0.55)] transition-all duration-200 hover:-translate-y-0.5 hover:bg-turquoise-700 active:translate-y-0 active:scale-[0.97]"
           >
-            ارسال اطلاعات
+            بررسی و ارسال اطلاعات
           </button>
         </div>
       )}
 
-      {/* ————————————————— ONBOARDING TOUR ————————————————— */}
-      {tourActive && !tourPaused && tourContent && (
-        <TourOverlay step={tourContent} progress={completionPercent} onClose={closeTour} />
-      )}
+      {/* ————————————————— ONBOARDING POPUP ————————————————— */}
+      {onboardingOpen && <OnboardingPopup onClose={dismissOnboarding} />}
 
       {/* ————————————————— CONFIRMATION MODAL ————————————————— */}
       {confirmOpen && (

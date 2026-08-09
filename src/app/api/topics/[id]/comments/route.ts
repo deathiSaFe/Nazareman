@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { canViewPendingTopic, PermissionError, requireVerifiedUser } from '@/lib/authorization';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -13,6 +14,19 @@ export async function POST(
     params: Promise<{ id: string }>;
   }
 ) {
+  // Comments require a signed-in, phone-verified user.
+  let user;
+
+  try {
+    user = await requireVerifiedUser();
+  } catch (error) {
+    if (error instanceof PermissionError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+
+    return NextResponse.json({ error: 'ارسال نظر ممکن نشد.' }, { status: 500 });
+  }
+
   let payload: unknown;
 
   try {
@@ -76,6 +90,8 @@ export async function POST(
       },
       select: {
         id: true,
+        status: true,
+        submittedById: true,
       },
     });
 
@@ -86,11 +102,35 @@ export async function POST(
       );
     }
 
+    // Do not reveal or allow interaction with other users' PENDING topics.
+    if (topic.status === 'PENDING' && !canViewPendingTopic(user, topic, false)) {
+      return NextResponse.json(
+        { error: 'Topic not found.' },
+        { status: 404 }
+      );
+    }
+
+    // A verified user may submit at most ONE comment per topic. Enforced
+    // server-side — a client cannot bypass this by calling the API directly.
+    const existingComment = await prisma.comment.findFirst({
+      where: { topicId: topic.id, authorId: user.id },
+      select: { id: true },
+    });
+
+    if (existingComment) {
+      return NextResponse.json(
+        { error: 'شما قبلاً نظر خود را برای این صفحه ثبت کرده‌اید.' },
+        { status: 409 }
+      );
+    }
+
+    // The author always comes from the server session — never from the client.
     const comment = await prisma.comment.create({
       data: {
         topicId: topic.id,
         body,
         status: 'PENDING',
+        authorId: user.id,
       },
       select: {
         id: true,
