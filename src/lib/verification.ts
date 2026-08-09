@@ -6,9 +6,24 @@
  * refuses to fake verification: it throws / returns false until a real OTP
  * provider is wired in behind these two functions. The User model and the
  * auth/session layer do not need to change when that happens.
+ *
+ * TEST-ONLY ESCAPE HATCH: setting the environment variable `DEV_VERIFICATION=true`
+ * (e.g. on a Vercel deployment) allows the same fixed stub code to be used in
+ * production purely so the deployed auth flow can be exercised. It must never
+ * be enabled for real users — when it is unset or not exactly `"true"`,
+ * production keeps requiring a real SMS provider.
  */
 
 const DEV_VERIFICATION_CODE = '123456';
+
+/**
+ * Whether the fixed development stub code may be used. Always true in
+ * development; in production only when the TEST-ONLY override is explicitly
+ * enabled (DEV_VERIFICATION exactly equal to "true").
+ */
+function fakeOtpAllowed(): boolean {
+  return process.env.NODE_ENV !== 'production' || process.env.DEV_VERIFICATION === 'true';
+}
 
 /** Digits only; drops a leading 00 country-code prefix. */
 export function normalizePhoneNumber(value: string): string {
@@ -28,18 +43,19 @@ export function isValidPhoneNumber(value: string): boolean {
 }
 
 export interface VerificationRequestResult {
-  /** Present only in development so the flow is testable without SMS. */
+  /** Present only in development/test mode so the flow is testable without SMS. */
   devCode?: string;
 }
 
 /**
  * DEV stub: returns a fixed code to display.
- * PRODUCTION: replace with a real SMS OTP send. Throws until configured.
+ * PRODUCTION: replace with a real SMS OTP send. Throws until configured, unless
+ * the TEST-ONLY `DEV_VERIFICATION=true` override is explicitly enabled.
  */
 export async function requestPhoneVerificationCode(
   phoneNumber: string
 ): Promise<VerificationRequestResult> {
-  if (process.env.NODE_ENV === 'production') {
+  if (!fakeOtpAllowed()) {
     throw new Error('Real SMS OTP provider is not configured yet.');
   }
 
@@ -52,10 +68,11 @@ export async function requestPhoneVerificationCode(
 
 /**
  * DEV stub: accepts the fixed code.
- * PRODUCTION: replace with real OTP verification.
+ * PRODUCTION: replace with real OTP verification. Returns false until
+ * configured, unless the TEST-ONLY `DEV_VERIFICATION=true` override is enabled.
  */
 export async function verifyPhoneCode(phoneNumber: string, code: string): Promise<boolean> {
-  if (process.env.NODE_ENV === 'production') {
+  if (!fakeOtpAllowed()) {
     return false;
   }
 
