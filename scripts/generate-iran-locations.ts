@@ -3,6 +3,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import readline from 'node:readline';
 import { Readable } from 'node:stream';
+import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import yauzl from 'yauzl';
 
 const ROOT = process.cwd();
@@ -527,7 +528,7 @@ async function downloadFile(
 
   await fsp.mkdir(path.dirname(filePath), { recursive: true });
 
-  const nodeStream = Readable.fromWeb(res.body as any);
+  const nodeStream = Readable.fromWeb(res.body as unknown as WebReadableStream);
   const fileStream = fs.createWriteStream(filePath);
 
   await new Promise<void>((resolve, reject) => {

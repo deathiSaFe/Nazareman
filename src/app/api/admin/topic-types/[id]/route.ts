@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { validateAdminPassword } from '@/lib/admin-auth';
+import { PermissionError, requireAdmin } from '@/lib/authorization';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -19,27 +19,24 @@ function isAllowedStatus(value: unknown): value is AllowedStatus {
   );
 }
 
-function readAdminPassword(request: NextRequest): string {
-  const raw = request.headers.get('x-admin-password') ?? '';
-
-  try {
-    return decodeURIComponent(raw);
-  } catch {
-    return raw;
-  }
-}
-
 export async function PATCH(
   request: NextRequest,
   context: {
     params: Promise<{ id: string }>;
   }
 ) {
-  const adminPassword = readAdminPassword(request);
+  let admin;
 
-  if (!validateAdminPassword(adminPassword)) {
+  try {
+    admin = await requireAdmin();
+  } catch (error) {
+    if (error instanceof PermissionError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
+
+  void admin;
 
   let payload: unknown;
 

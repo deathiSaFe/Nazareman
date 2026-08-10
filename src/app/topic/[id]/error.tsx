@@ -1,12 +1,6 @@
 'use client';
 
-export default function TopicError({
-  error,
-  reset,
-}: {
-  error: Error & { digest?: string };
-  reset: () => void;
-}) {
+export default function TopicError({ reset }: { reset: () => void }) {
   return (
     <main className="flex min-h-screen items-center justify-center bg-paper px-5">
       <div className="w-full max-w-md rounded-3xl bg-white p-8 text-center ring-1 ring-ink-900/[0.06]">

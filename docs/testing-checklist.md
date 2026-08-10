@@ -2,7 +2,7 @@
 
 ## Setup
 1. Ensure PostgreSQL is running
-2. Verify `.env` has `DATABASE_URL` and `ADMIN_PASSWORD`
+2. Verify `.env` has `DATABASE_URL` (and `ADMIN_PHONE` to bootstrap the first admin)
 3. Run: `npx prisma migrate deploy`
 4. Run: `npm run db:seed`
 5. Run: `npm run dev`
@@ -70,9 +70,8 @@
 ---
 
 ## 6. Admin Login (`/admin`)
-- [ ] Login form appears without password
-- [ ] Wrong password shows error
-- [ ] Correct password grants access
+- [ ] Signing in with a non-admin account shows the admin login prompt
+- [ ] Signing in with a UserRole.ADMIN account grants access
 - [ ] Admin navigation links work
 
 ---

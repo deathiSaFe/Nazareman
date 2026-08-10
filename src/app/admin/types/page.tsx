@@ -1,12 +1,8 @@
 import Link from 'next/link';
 import { prisma } from '@/lib/prisma';
 import { TypeSuggestionsModerationClient } from '@/components/admin/TypeSuggestionsModerationClient';
+import { getAdmin } from '@/lib/authorization';
 import { AdminLoginForm } from '@/components/admin/AdminLoginForm';
-import {
-  getAdminPassword,
-  validateAdminPassword,
-  getAdminPasswordFromCookie,
-} from '@/lib/admin-auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,9 +11,15 @@ export const metadata = {
 };
 
 export default async function AdminTypeSuggestionsPage() {
+  const admin = await getAdmin();
+
+  if (!admin) {
+    return <AdminLoginForm />;
+  }
+
   const pendingSuggestions = await prisma.topicTypeSuggestion.findMany({
     where: {
-      status: 'PENDING',
+      status: 'PENDING_REVIEW',
     },
     orderBy: {
       submittedAt: 'desc',
@@ -28,16 +30,6 @@ export default async function AdminTypeSuggestionsPage() {
       submittedAt: true,
     },
   });
-
-  if (!getAdminPassword()) {
-    return <AdminLoginForm notConfigured />;
-  }
-
-  const adminPassword = await getAdminPasswordFromCookie();
-
-  if (!validateAdminPassword(adminPassword)) {
-    return <AdminLoginForm hasInvalidCookie={adminPassword.length > 0} />;
-  }
 
   const suggestions = pendingSuggestions.map((suggestion) => ({
     id: suggestion.id,

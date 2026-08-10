@@ -1,5 +1,6 @@
 ﻿import Link from 'next/link';
 import { headers } from 'next/headers';
+import { getInternalBaseUrl } from '@/lib/base-url';
 import { primaryTypeLabel, topicHref } from '@/types/topic';
 
 export const dynamic = 'force-dynamic';
@@ -50,9 +51,7 @@ function getCityLabel(topic: ApiTopic): string {
 export default async function TopicsPage() {
   const headersList = await headers();
 
-  const host = headersList.get('host') ?? 'localhost:3000';
-  const protocol = headersList.get('x-forwarded-proto') ?? 'http';
-  const baseUrl = `${protocol}://${host}`;
+  const baseUrl = getInternalBaseUrl(headersList);
 
   let topics: ApiTopic[] = [];
   let fetchFailed = false;

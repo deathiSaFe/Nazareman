@@ -21,14 +21,60 @@ enum LocationScope {
 }
 
 enum ModerationStatus {
-  PENDING
+  DRAFT
+  PENDING_REVIEW
   APPROVED
+  CHANGES_REQUESTED
   REJECTED
 }
 
 enum ModerationAction {
   APPROVE
   REJECT
+  REQUEST_CHANGES
+  EDIT
+  COMMENT_APPROVE
+  COMMENT_REJECT
+  COMMENT_DELETE
+  SUGGESTION_APPROVE
+  SUGGESTION_REJECT
+  SUGGESTION_REQUEST_CHANGES
+  OWNERSHIP_APPROVE
+  OWNERSHIP_REJECT
+  OWNERSHIP_REQUEST_CHANGES
+}
+
+/** What a user-facing inbox message refers to. */
+enum NotificationKind {
+  /** Admin decided the review of the user's submitted page (Submission). */
+  SUBMISSION_DECISION
+  /** Admin decided the user's edit suggestion (Suggestion). */
+  SUGGESTION_DECISION
+  /** Admin decided the user's ownership request (OwnershipRequest). */
+  OWNERSHIP_DECISION
+}
+
+enum OwnershipRequestStatus {
+  PENDING_REVIEW
+  CHANGES_REQUESTED
+  APPROVED
+  REJECTED
+}
+
+enum SuggestionKind {
+  FIELD_CHANGE
+  CLOSED
+  MOVED
+  MISSING_INFO
+  PHOTO
+  GENERAL
+}
+
+enum SuggestionStatus {
+  PENDING_REVIEW
+  CHANGES_REQUESTED
+  APPROVED
+  REJECTED
 }
 
 enum TopicTypeKind {
@@ -56,6 +102,7 @@ model User {
   id            String    @id @default(uuid()) @db.Uuid
   phoneNumber   String    @unique
   displayName   String?
+  avatarUrl     String?
   phoneVerified Boolean   @default(false)
   role          UserRole  @default(USER)
   createdAt     DateTime  @default(now())
@@ -65,7 +112,16 @@ model User {
   topics         Topic[]
   comments       Comment[]
   submissions    Submission[]
+  decidedSubmissions Submission[] @relation("SubmissionDecidedBy")
+  suggestions    Suggestion[] @relation("SuggestionAuthor")
+  decidedSuggestions Suggestion[] @relation("SuggestionDecider")
+  ownerships     PageOwnership[]
+  ownershipRequests OwnershipRequest[]
+  decidedOwnershipRequests OwnershipRequest[] @relation("OwnershipRequestDecidedBy")
+  favorites      Favorite[]
+  ratings        Rating[]
   moderationLogs ModerationLog[]
+  notifications  Notification[]
 }
 
 /**
@@ -137,7 +193,7 @@ model Topic {
   address       String?
   latitude      Float?
   longitude     Float?
-  status        ModerationStatus @default(PENDING)
+  status        ModerationStatus @default(DRAFT)
   submittedById String?          @db.Uuid
   createdAt     DateTime         @default(now())
   approvedAt    DateTime?
@@ -150,7 +206,13 @@ model Topic {
   links          TopicLink[]
   comments       Comment[]
   submission     Submission?
+  suggestions    Suggestion[]
+  ownerships     PageOwnership[]
+  ownershipRequests OwnershipRequest[]
+  favorites      Favorite[]
+  ratings        Rating[]
   moderationLogs ModerationLog[]
+  notifications  Notification[]
 
   @@index([status, createdAt])
   @@index([scope])
@@ -160,41 +222,144 @@ model Topic {
   @@index([submittedById])
 }
 
+/**
+ * A user's privately saved page. Favorites are private — they are never
+ * exposed in public topic responses.
+ */
+model Favorite {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  topicId   String   @db.Uuid
+  createdAt DateTime @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  topic Topic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, topicId])
+  @@index([topicId])
+  @@index([userId])
+}
+
+/**
+ * A user's 1–5 star rating of an APPROVED topic. One rating per (topic, user);
+ * later ratings update the same row. Ratings are not moderated.
+ */
+model Rating {
+  id        String   @id @default(uuid()) @db.Uuid
+  topicId   String   @db.Uuid
+  userId    String   @db.Uuid
+  value     Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  topic Topic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([topicId, userId])
+  @@index([topicId])
+  @@index([userId])
+}
+
 model Comment {
   id           String           @id @default(uuid()) @db.Uuid
   topicId      String           @db.Uuid
   body         String
-  status       ModerationStatus @default(PENDING)
+  status       ModerationStatus @default(PENDING_REVIEW)
   authorId     String?          @db.Uuid
+  parentId     String?          @db.Uuid
   submissionId String?          @unique @db.Uuid
   createdAt    DateTime         @default(now())
 
   topic      Topic       @relation(fields: [topicId], references: [id], onDelete: Cascade)
   author     User?       @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  parent     Comment?    @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies    Comment[]   @relation("CommentReplies")
   submission Submission? @relation(fields: [submissionId], references: [id], onDelete: SetNull)
 
   moderationLogs ModerationLog[]
 
+  // At most ONE contribution (top-level comment or reply) per user per topic.
+  // Legacy rows with NULL authorId are exempt (Postgres allows multiple NULLs).
+  @@unique([topicId, authorId])
   @@index([topicId, status, createdAt])
   @@index([status, createdAt])
+  @@index([parentId])
+}
+
+/**
+ * A verified user's approved ownership of a specific page. OWNER identity is
+ * derived ONLY from this table — never from Topic.submittedById (creator).
+ *
+ * Rows are created exclusively when an admin approves an OwnershipRequest.
+ * Exactly one PageOwnership row per (topic, user); one request maps to at
+ * most one resulting ownership.
+ */
+model PageOwnership {
+  id                 String   @id @default(uuid()) @db.Uuid
+  topicId            String   @db.Uuid
+  userId             String   @db.Uuid
+  ownershipRequestId String?  @unique @db.Uuid
+  approvedAt         DateTime @default(now())
+  createdAt          DateTime @default(now())
+
+  topic            Topic             @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ownershipRequest OwnershipRequest? @relation(fields: [ownershipRequestId], references: [id], onDelete: SetNull)
+
+  @@unique([topicId, userId])
+  @@index([userId])
+}
+
+/**
+ * A verified user's request to be recognized as the owner of an APPROVED page.
+ * Evidence is lightweight free text + an optional public URL; the admin
+ * reviews manually. Approval creates exactly one PageOwnership row.
+ */
+model OwnershipRequest {
+  id           String                @id @default(uuid()) @db.Uuid
+  topicId      String                @db.Uuid
+  userId       String                @db.Uuid
+  evidence     String
+  evidenceUrl  String?
+  status       OwnershipRequestStatus @default(PENDING_REVIEW)
+  decidedById  String?               @db.Uuid
+  decisionNote String?
+  decidedAt    DateTime?
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+
+  topic     Topic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  user      User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  decidedBy User? @relation("OwnershipRequestDecidedBy", fields: [decidedById], references: [id], onDelete: SetNull)
+
+  resultingOwnership PageOwnership?
+  moderationLogs     ModerationLog[]
+
+  @@index([topicId, status])
+  @@index([userId, status])
+  @@index([decidedById])
 }
 
 model Submission {
   id            String           @id @default(uuid()) @db.Uuid
-  status        ModerationStatus @default(PENDING)
+  status        ModerationStatus @default(DRAFT)
   topicId       String           @unique @db.Uuid
   submittedById String?          @db.Uuid
+  decidedById   String?          @db.Uuid
+  decisionNote  String?
   createdAt     DateTime         @default(now())
   decidedAt     DateTime?
 
   topic       Topic @relation(fields: [topicId], references: [id], onDelete: Cascade)
   submittedBy User? @relation(fields: [submittedById], references: [id], onDelete: SetNull)
+  decidedBy   User? @relation("SubmissionDecidedBy", fields: [decidedById], references: [id], onDelete: SetNull)
 
   firstComment   Comment?
   moderationLogs ModerationLog[]
 
   @@index([status, createdAt])
   @@index([submittedById])
+  @@index([decidedById])
 }
 
 model ModerationLog {
@@ -205,19 +370,57 @@ model ModerationLog {
   submissionId String?          @db.Uuid
   topicId      String?          @db.Uuid
   commentId    String?          @db.Uuid
+  suggestionId String?          @db.Uuid
+  ownershipRequestId String?    @db.Uuid
   createdAt    DateTime         @default(now())
 
-  admin      User?       @relation(fields: [adminId], references: [id], onDelete: SetNull)
-  submission Submission? @relation(fields: [submissionId], references: [id], onDelete: SetNull)
-  topic      Topic?      @relation(fields: [topicId], references: [id], onDelete: SetNull)
-  comment    Comment?    @relation(fields: [commentId], references: [id], onDelete: SetNull)
+  admin            User?            @relation(fields: [adminId], references: [id], onDelete: SetNull)
+  submission       Submission?      @relation(fields: [submissionId], references: [id], onDelete: SetNull)
+  topic            Topic?           @relation(fields: [topicId], references: [id], onDelete: SetNull)
+  comment          Comment?         @relation(fields: [commentId], references: [id], onDelete: SetNull)
+  suggestion       Suggestion?      @relation(fields: [suggestionId], references: [id], onDelete: SetNull)
+  ownershipRequest OwnershipRequest? @relation(fields: [ownershipRequestId], references: [id], onDelete: SetNull)
 
   @@index([submissionId])
   @@index([topicId])
   @@index([commentId])
+  @@index([suggestionId])
+  @@index([ownershipRequestId])
   @@index([adminId, createdAt])
   @@index([action, createdAt])
   @@index([createdAt])
+}
+
+/**
+ * A proposed change to a published (APPROVED) page. Submitting a suggestion
+ * never modifies the canonical Topic — only an admin approval applies the
+ * whitelisted `changes` to the Topic inside a single transaction.
+ *
+ * The author is always a verified user taken from the server session; `kind`
+ * describes the type of proposal; `changes` holds the proposed field values.
+ */
+model Suggestion {
+  id           String          @id @default(uuid()) @db.Uuid
+  topicId      String          @db.Uuid
+  authorId     String          @db.Uuid
+  kind         SuggestionKind
+  changes      Json?
+  note         String?
+  status       SuggestionStatus @default(PENDING_REVIEW)
+  decidedById  String?         @db.Uuid
+  decisionNote String?
+  decidedAt    DateTime?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  topic     Topic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  author    User  @relation("SuggestionAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  decidedBy User? @relation("SuggestionDecider", fields: [decidedById], references: [id], onDelete: SetNull)
+
+  moderationLogs ModerationLog[]
+
+  @@index([topicId, status])
+  @@index([authorId, status])
 }
 
 /**
@@ -227,10 +430,11 @@ model ModerationLog {
  * multiple types (one PRIMARY, the rest SECONDARY). The `status` field
  * governs pool membership:
  *   - APPROVED  -> offered by the add-topic autocomplete
- *   - PENDING   -> a label a user entered; awaiting admin review
+ *   - PENDING_REVIEW -> a label a user entered; awaiting admin review
  *   - REJECTED  -> reviewed and declined
- * A topic may reference a PENDING row — the user's custom label is attached
- * immediately and only the autocomplete eligibility waits for approval.
+ * A topic may reference a PENDING_REVIEW row — the user's custom label is
+ * attached immediately and only the autocomplete eligibility waits for
+ * approval.
  *
  * FUTURE: synonym & hierarchy support.
  * `parentId` already models a "type -> more specific type" hierarchy
@@ -238,10 +442,36 @@ model ModerationLog {
  * later, introduce a TopicTypeSynonym table (or a canonicalId self-reference)
  * mapping alias labels to a canonical type — purely additive, no redesign.
  */
+/**
+ * A user-facing inbox message — the admin's response to one of the user's
+ * requests (page review, edit suggestion, ownership request). Created at
+ * decision time in the admin routes; `kind` + `refId` point back at the
+ * original request record, and `title`/`body` are a snapshot of the response
+ * (an inbox row, not a live join). `readAt` drives the unread badge.
+ */
+model Notification {
+  id        String           @id @default(uuid()) @db.Uuid
+  userId    String           @db.Uuid
+  kind      NotificationKind
+  topicId   String?          @db.Uuid
+  /** Id of the originating request row (submission/suggestion/ownership). */
+  refId     String?          @db.Uuid
+  title     String
+  body      String
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  user  User?  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  topic Topic? @relation(fields: [topicId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([userId, readAt])
+}
+
 model TopicTypeSuggestion {
   id          String           @id @default(uuid()) @db.Uuid
   label       String           @unique
-  status      ModerationStatus @default(PENDING)
+  status      ModerationStatus @default(PENDING_REVIEW)
   parentId    String?          @db.Uuid
   parent      TopicTypeSuggestion? @relation("TypeHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
   children    TopicTypeSuggestion[] @relation("TypeHierarchy")

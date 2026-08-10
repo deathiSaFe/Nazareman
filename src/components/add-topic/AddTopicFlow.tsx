@@ -173,7 +173,7 @@ export function AddTopicFlow({ className = '', initialName = '' }: AddTopicFlowP
     };
 
     try {
-      const response = await fetch('/api/topics/submit', {
+      const response = await fetch('/api/topics', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),

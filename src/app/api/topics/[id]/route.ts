@@ -1,8 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUser } from '@/lib/auth';
-import { canEditTopic, canViewPendingTopic, requestIsAdmin } from '@/lib/authorization';
-import type { ContactPlatform } from '@/types/topic';
+import { getTopicRatingStats } from '@/lib/rating';
+import {
+  canDirectlyEditTopic,
+  canSubmitTopic,
+  canViewNonPublicTopic,
+  isAdminUser,
+} from '@/lib/authorization';
+import type { ContactPlatform, LocationScope, TopicTypeKind } from '@/types/topic';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -10,6 +16,11 @@ export const dynamic = 'force-dynamic';
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+const LOCATION_SCOPES: readonly LocationScope[] = ['NATIONAL', 'PROVINCE', 'CITY', 'ADDRESS'];
+
+const MAX_NAME_LENGTH = 80;
+const MAX_TYPE_LENGTH = 60;
+const MAX_TYPES = 5;
 const MAX_DESCRIPTION_LENGTH = 2000;
 const MAX_WORKING_HOURS_LENGTH = 500;
 const MAX_LINK_LENGTH = 200;
@@ -36,6 +47,13 @@ function isPlatform(value: unknown): value is ContactPlatform {
   return (
     typeof value === 'string' &&
     (PLATFORMS as readonly string[]).includes(value)
+  );
+}
+
+function isLocationScope(value: unknown): value is LocationScope {
+  return (
+    typeof value === 'string' &&
+    (LOCATION_SCOPES as readonly string[]).includes(value)
   );
 }
 
@@ -97,6 +115,68 @@ function parseLinks(raw: unknown, errors: string[]): SubmittedLink[] {
   return links;
 }
 
+type SubmittedType = { label: string; kind: TopicTypeKind };
+
+function parseTypes(raw: unknown, errors: string[]): SubmittedType[] {
+  if (raw === undefined) return [];
+
+  if (!Array.isArray(raw) || raw.length === 0) {
+    errors.push('types must contain at least one type.');
+    return [];
+  }
+
+  if (raw.length > MAX_TYPES) {
+    errors.push(`types must contain at most ${MAX_TYPES} types.`);
+  }
+
+  const types: SubmittedType[] = [];
+  const seen = new Set<string>();
+
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null) {
+      errors.push('Each type must be an object with label and kind.');
+      continue;
+    }
+
+    const record = item as Record<string, unknown>;
+    const label = typeof record.label === 'string' ? record.label.trim() : '';
+    const kind = record.kind;
+
+    if (!label) {
+      errors.push('type label is required.');
+      continue;
+    }
+
+    if (label.length > MAX_TYPE_LENGTH) {
+      errors.push(`type label must be ${MAX_TYPE_LENGTH} characters or fewer.`);
+      continue;
+    }
+
+    if (kind !== 'PRIMARY' && kind !== 'SECONDARY') {
+      errors.push('type kind must be PRIMARY or SECONDARY.');
+      continue;
+    }
+
+    if (seen.has(label)) {
+      errors.push(`Duplicate type label: "${label}".`);
+      continue;
+    }
+
+    seen.add(label);
+    types.push({ label, kind });
+  }
+
+  const primaryIndex = types.findIndex((type) => type.kind === 'PRIMARY');
+
+  if (primaryIndex > 0) {
+    errors.push('Only one primary type is allowed — the first type must be PRIMARY.');
+  } else if (primaryIndex === -1 && types.length > 0) {
+    types[0].kind = 'PRIMARY';
+  }
+
+  return types;
+}
+
 export async function GET(
   request: NextRequest,
   context: {
@@ -116,11 +196,13 @@ export async function GET(
 
     const isUuid = UUID_REGEX.test(identifier);
 
-    const allowedStatuses: Array<'APPROVED' | 'PENDING'> = isUuid
-      ? ['APPROVED', 'PENDING']
+    const allowedStatuses: Array<
+      'APPROVED' | 'DRAFT' | 'PENDING_REVIEW' | 'CHANGES_REQUESTED' | 'REJECTED'
+    > = isUuid
+      ? ['APPROVED', 'DRAFT', 'PENDING_REVIEW', 'CHANGES_REQUESTED', 'REJECTED']
       : ['APPROVED'];
 
-    // Fetch topic first (without comments) to determine its status
+    // Fetch topic first (without comments) to determine its status.
     const topic = await prisma.topic.findFirst({
       where: {
         status: { in: allowedStatuses },
@@ -147,6 +229,13 @@ export async function GET(
             value: true,
           },
           orderBy: { createdAt: 'asc' },
+        },
+        submission: {
+          select: {
+            status: true,
+            decisionNote: true,
+            decidedAt: true,
+          },
         },
         city: {
           select: {
@@ -193,20 +282,29 @@ export async function GET(
       );
     }
 
-    // PENDING topics are only visible to the verified creator and admins.
-    // Everyone else gets a clean 404 so the page's existence stays hidden.
+    // Non-public topics (anything but APPROVED) are only visible to the
+    // verified creator and admins. Everyone else gets a clean 404 so the
+    // page's existence stays hidden.
     const currentUser = await getCurrentUser();
-    const admin = requestIsAdmin(request);
+    const admin = isAdminUser(currentUser);
 
-    if (topic.status === 'PENDING' && !canViewPendingTopic(currentUser, topic, admin)) {
+    if (topic.status !== 'APPROVED' && !canViewNonPublicTopic(currentUser, topic, admin)) {
       return NextResponse.json(
         { error: 'Topic not found.' },
         { status: 404 }
       );
     }
 
-    // Whether the signed-in user already left a comment on this topic — used by
-    // the UI to show «شما قبلاً نظر ثبت کرده‌اید» instead of a second form.
+    // The creator-facing decision message from the admin: the rejection reason
+    // or the request-changes note. Stored on the Submission review record.
+    const decisionNote =
+      topic.status === 'CHANGES_REQUESTED' || topic.status === 'REJECTED'
+        ? (topic.submission?.decisionNote ?? null)
+        : null;
+
+    // Whether the signed-in user already contributed (comment or reply) on this
+    // topic — used by the UI to replace the form with the already-contributed
+    // state. The DB unique constraint (topicId, authorId) backs this.
     const hasCommented = currentUser
       ? Boolean(
           await prisma.comment.findFirst({
@@ -216,10 +314,10 @@ export async function GET(
         )
       : false;
 
-    // If topic is PENDING (creator viewing via UUID), show all comments.
-    // If topic is APPROVED (public view), only show APPROVED comments.
+    // Non-public topics (creator viewing via UUID) show all comments; public
+    // APPROVED view only shows APPROVED comments.
     const commentStatusFilter =
-      topic.status === 'PENDING'
+      topic.status !== 'APPROVED'
         ? undefined
         : 'APPROVED';
 
@@ -238,6 +336,8 @@ export async function GET(
         body: true,
         createdAt: true,
         status: true,
+        authorId: true,
+        parentId: true,
         author: {
           select: {
             displayName: true,
@@ -246,13 +346,98 @@ export async function GET(
       },
     });
 
+    // Owner badge: a comment author is marked isOwner only when an approved
+    // PageOwnership row exists for (topic, author). Never derived from
+    // submittedById (creator). PageOwnership rows do not exist yet (creation
+    // flow is a later stage), so isOwner is currently always false.
+    const authorIds = [
+      ...new Set(comments.map((comment) => comment.authorId).filter((id): id is string => Boolean(id))),
+    ];
+
+    const ownerRows =
+      authorIds.length > 0
+        ? await prisma.pageOwnership.findMany({
+            where: { topicId: topic.id, userId: { in: authorIds } },
+            select: { userId: true },
+          })
+        : [];
+
+    const ownerUserIds = new Set(ownerRows.map((row) => row.userId));
+
+    // Each comment shows its author's rating on this topic (read-only, public
+    // review info). Comments on APPROVED pages always carry a rating (it is
+    // mandatory there); on other statuses the rating may be null.
+    const authorRatingRows =
+      authorIds.length > 0
+        ? await prisma.rating.findMany({
+            where: { topicId: topic.id, userId: { in: authorIds } },
+            select: { userId: true, value: true },
+          })
+        : [];
+
+    const authorRatingByUser = new Map(
+      authorRatingRows.map((row) => [row.userId, row.value])
+    );
+
     const mappedComments = comments.map((comment) => ({
       id: comment.id,
       body: comment.body,
       createdAt: comment.createdAt,
       status: comment.status,
+      authorId: comment.authorId,
       authorName: comment.author?.displayName ?? null,
+      parentId: comment.parentId,
+      isReply: comment.parentId !== null,
+      isOwner: comment.authorId ? ownerUserIds.has(comment.authorId) : false,
+      rating: comment.authorId
+        ? (authorRatingByUser.get(comment.authorId) ?? null)
+        : null,
     }));
+
+    // Ratings only exist on APPROVED topics; the aggregate is public but
+    // individual ratings are private. myRating / isFavorited are viewer-only.
+    const ratingStats = await getTopicRatingStats(topic.id);
+
+    const [myRatingRow, myFavoriteRow] = currentUser
+      ? await Promise.all([
+          prisma.rating.findUnique({
+            where: { topicId_userId: { topicId: topic.id, userId: currentUser.id } },
+            select: { value: true },
+          }),
+          prisma.favorite.findUnique({
+            where: { userId_topicId: { userId: currentUser.id, topicId: topic.id } },
+            select: { id: true },
+          }),
+        ])
+      : [null, null];
+
+    const myRating = myRatingRow?.value ?? null;
+    const isFavorited = Boolean(myFavoriteRow);
+
+    // Viewer-scoped ownership state: is the viewer an owner of this page, and
+    // their own latest ownership request (for the claim-request UI).
+    const [viewerOwnership, viewerOwnershipRequest] = currentUser
+      ? await Promise.all([
+          prisma.pageOwnership.findUnique({
+            where: {
+              topicId_userId: { topicId: topic.id, userId: currentUser.id },
+            },
+            select: { id: true },
+          }),
+          prisma.ownershipRequest.findFirst({
+            where: { topicId: topic.id, userId: currentUser.id },
+            orderBy: { createdAt: 'desc' },
+            select: {
+              id: true,
+              status: true,
+              decisionNote: true,
+            },
+          }),
+        ])
+      : [null, null];
+
+    const isOwner = Boolean(viewerOwnership);
+    const myOwnershipRequest = viewerOwnershipRequest;
 
     return NextResponse.json({
       id: topic.id,
@@ -278,9 +463,24 @@ export async function GET(
         value: link.value,
       })),
       comments: mappedComments,
+      decisionNote,
+      // Rating aggregate + the authenticated viewer's own rating/favorite.
+      // Individual ratings are never exposed; favorites are private.
+      averageRating: ratingStats.averageRating,
+      ratingCount: ratingStats.ratingCount,
+      myRating,
+      isFavorited,
+      isOwner,
+      myOwnershipRequest,
       permissions: {
-        canEdit: canEditTopic(currentUser, topic, admin),
+        canEdit: canDirectlyEditTopic(currentUser, topic, admin),
+        canSubmit: canSubmitTopic(currentUser, topic),
+        canSuggest: Boolean(currentUser?.phoneVerified),
         canComment: Boolean(currentUser?.phoneVerified && !hasCommented),
+        canReply: Boolean(currentUser?.phoneVerified),
+        canRate: Boolean(currentUser?.phoneVerified),
+        canFavorite: Boolean(currentUser?.phoneVerified),
+        canRequestOwnership: Boolean(currentUser?.phoneVerified),
         hasCommented,
       },
     });
@@ -296,12 +496,14 @@ export async function GET(
 
 /**
  * PATCH /api/topics/[id]
- * Inline page editors call this endpoint. Accepts any subset of the
- * contribution fields: introduction, working hours, primary image, address and
- * the repeatable contact rows (phones / website / social links).
+ * Inline page editors call this endpoint. The verified creator may save their
+ * DRAFT / CHANGES_REQUESTED / REJECTED page; admins may edit any status.
  *
- * Only the verified original submitter (Topic.submittedById) or an admin may
- * edit a page. Ownership/claims are a later phase.
+ * Saving edits never changes the moderation status — only
+ * POST /api/topics/[id]/submit moves a page to PENDING_REVIEW. The request
+ * body may carry any subset of the editable fields (identity, location,
+ * introduction, working hours, image, address and contact rows). Status and
+ * ownership fields from the client are always ignored.
  */
 export async function PATCH(
   request: NextRequest,
@@ -309,9 +511,9 @@ export async function PATCH(
     params: Promise<{ id: string }>;
   }
 ) {
-  // Resolve the actor from the server session + admin header, never the body.
+  // Resolve the actor from the server session, never the body.
   const user = await getCurrentUser();
-  const admin = requestIsAdmin(request);
+  const admin = isAdminUser(user);
 
   let body: unknown;
 
@@ -334,8 +536,11 @@ export async function PATCH(
   const has = (key: string): boolean => data[key] !== undefined;
 
   // Partial update: only fields explicitly present in the body are changed.
-  // Otherwise a one-field save (e.g. the tour editing only the address) would
-  // silently null out every other field.
+  const name = has('name')
+    ? typeof data.name === 'string'
+      ? data.name.trim()
+      : ''
+    : undefined;
   const description = has('description')
     ? typeof data.description === 'string'
       ? data.description.trim()
@@ -356,10 +561,23 @@ export async function PATCH(
       ? data.imageUrl.trim()
       : ''
     : undefined;
+  const scope = data.scope;
+  const provinceSlug =
+    typeof data.provinceSlug === 'string' ? data.provinceSlug.trim() : '';
+  const citySlug =
+    typeof data.citySlug === 'string' ? data.citySlug.trim() : '';
+
+  const hasTypes = data.types !== undefined;
+  const types = hasTypes ? parseTypes(data.types, errors) : [];
 
   const hasLinks = data.links !== undefined;
   const links = hasLinks ? parseLinks(data.links, errors) : [];
 
+  if (name !== undefined && !name) {
+    errors.push('name is required.');
+  } else if (name !== undefined && name.length > MAX_NAME_LENGTH) {
+    errors.push(`name must be ${MAX_NAME_LENGTH} characters or fewer.`);
+  }
   if (description !== undefined && description.length > MAX_DESCRIPTION_LENGTH) {
     errors.push(`description must be ${MAX_DESCRIPTION_LENGTH} characters or fewer.`);
   }
@@ -371,6 +589,12 @@ export async function PATCH(
   }
   if (imageUrl && !isValidHttpUrl(imageUrl)) {
     errors.push('imageUrl must be a valid http(s) URL.');
+  }
+  if (has('scope') && !isLocationScope(scope)) {
+    errors.push('scope must be a valid location scope.');
+  }
+  if (citySlug && !provinceSlug) {
+    errors.push('provinceSlug is required when citySlug is provided.');
   }
 
   if (errors.length > 0) {
@@ -389,19 +613,21 @@ export async function PATCH(
 
     const existing = await prisma.topic.findFirst({
       where: {
-        status: { in: ['APPROVED', 'PENDING'] },
+        status: {
+          in: ['APPROVED', 'DRAFT', 'PENDING_REVIEW', 'CHANGES_REQUESTED', 'REJECTED'],
+        },
         OR: isUuid
           ? [{ id: identifier }, { slug: identifier }]
           : [{ slug: identifier }],
       },
-      select: { id: true, submittedById: true },
+      select: { id: true, submittedById: true, status: true },
     });
 
     if (!existing) {
       return NextResponse.json({ error: 'Page not found.' }, { status: 404 });
     }
 
-    if (!canEditTopic(user, existing, admin)) {
+    if (!canDirectlyEditTopic(user, existing, admin)) {
       if (!user) {
         return NextResponse.json(
           { error: 'برای ویرایش این صفحه باید وارد حساب کاربری شوید.' },
@@ -416,17 +642,67 @@ export async function PATCH(
         );
       }
 
+      if (existing.status === 'APPROVED') {
+        return NextResponse.json(
+          { error: 'صفحه منتشر شده قابل ویرایش مستقیم نیست. برای اصلاح، از پیشنهاد تغییر استفاده کنید.' },
+          { status: 403 }
+        );
+      }
+
       return NextResponse.json(
         { error: 'شما اجازه ویرایش این صفحه را ندارید.' },
         { status: 403 }
       );
     }
 
+    // Resolve location references from slugs (only when actually provided).
+    let provinceId: string | null | undefined;
+    let cityId: string | null | undefined;
+
+    if (provinceSlug) {
+      const province = await prisma.province.findUnique({
+        where: { slug: provinceSlug },
+        select: { id: true },
+      });
+
+      if (!province) {
+        return NextResponse.json({ error: 'Province not found.' }, { status: 404 });
+      }
+
+      provinceId = province.id;
+    }
+
+    if (citySlug) {
+      if (!provinceId) {
+        return NextResponse.json({ error: 'Province not found.' }, { status: 404 });
+      }
+
+      const city = await prisma.city.findUnique({
+        where: { provinceId_slug: { provinceId, slug: citySlug } },
+        select: { id: true },
+      });
+
+      if (!city) {
+        return NextResponse.json({ error: 'City not found.' }, { status: 404 });
+      }
+
+      cityId = city.id;
+    }
+
     const updateData: Record<string, unknown> = {};
+    if (name !== undefined) updateData.name = name;
     if (description !== undefined) updateData.description = description || null;
     if (workingHours !== undefined) updateData.workingHours = workingHours || null;
     if (address !== undefined) updateData.address = address || null;
     if (imageUrl !== undefined) updateData.imageUrl = imageUrl || null;
+    if (has('scope') && isLocationScope(scope)) {
+      updateData.scope = scope;
+      updateData.provinceId = provinceId ?? null;
+      updateData.cityId = cityId ?? null;
+    } else if (provinceSlug || citySlug) {
+      if (provinceId !== undefined) updateData.provinceId = provinceId;
+      if (cityId !== undefined) updateData.cityId = cityId;
+    }
 
     const updated = await prisma.$transaction(async (tx) => {
       const topic = await tx.topic.update({
@@ -434,6 +710,30 @@ export async function PATCH(
         data: updateData,
         select: { id: true, slug: true },
       });
+
+      if (hasTypes) {
+        await tx.topicTypeTag.deleteMany({ where: { topicId: existing.id } });
+
+        for (let index = 0; index < types.length; index += 1) {
+          const type = types[index];
+
+          const suggestion = await tx.topicTypeSuggestion.upsert({
+            where: { label: type.label },
+            update: {},
+            create: { label: type.label, status: 'PENDING_REVIEW' },
+            select: { id: true },
+          });
+
+          await tx.topicTypeTag.create({
+            data: {
+              topicId: existing.id,
+              typeId: suggestion.id,
+              kind: type.kind,
+              order: index,
+            },
+          });
+        }
+      }
 
       if (hasLinks) {
         await tx.topicLink.deleteMany({ where: { topicId: existing.id } });

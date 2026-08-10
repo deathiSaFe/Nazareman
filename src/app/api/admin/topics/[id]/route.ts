@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { validateAdminPassword } from '@/lib/admin-auth';
+import { PermissionError, requireAdmin } from '@/lib/authorization';
+import { createNotification } from '@/lib/notifications';
 import type { ContactPlatform, LocationScope, TopicTypeKind } from '@/types/topic';
 
 export const runtime = 'nodejs';
@@ -9,7 +10,7 @@ export const dynamic = 'force-dynamic';
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-const ALLOWED_STATUSES = ['APPROVED', 'REJECTED'] as const;
+const ALLOWED_STATUSES = ['APPROVED', 'CHANGES_REQUESTED', 'REJECTED'] as const;
 
 const LOCATION_SCOPES: readonly LocationScope[] = ['NATIONAL', 'PROVINCE', 'CITY', 'ADDRESS'];
 
@@ -34,16 +35,6 @@ type SubmittedLink = {
   label?: string;
   value: string;
 };
-
-function readAdminPassword(request: NextRequest): string {
-  const raw = request.headers.get('x-admin-password') ?? '';
-
-  try {
-    return decodeURIComponent(raw);
-  } catch {
-    return raw;
-  }
-}
 
 function isAllowedStatus(value: unknown): value is AllowedStatus {
   return (
@@ -153,10 +144,39 @@ function parseLinks(raw: unknown): SubmittedLink[] | null {
   return links;
 }
 
+function typesEqual(
+  left: SubmittedType[],
+  right: { label: string; kind: TopicTypeKind }[]
+): boolean {
+  if (left.length !== right.length) return false;
+
+  return left.every(
+    (type, index) =>
+      right[index] &&
+      type.label === right[index].label &&
+      type.kind === right[index].kind
+  );
+}
+
+function linksEqual(left: SubmittedLink[], right: SubmittedLink[]): boolean {
+  if (left.length !== right.length) return false;
+
+  return left.every(
+    (link, index) =>
+      right[index] &&
+      link.platform === right[index].platform &&
+      link.value === right[index].value &&
+      (link.label ?? null) === (right[index].label ?? null)
+  );
+}
+
 /**
  * PATCH /api/admin/topics/[id]
- * Full page review: the admin can edit every field and publish/reject the
- * page in one action. Types are replaced atomically via TopicTypeTag.
+ * Full page review: the admin can edit every field and make one of three
+ * decisions — APPROVE, REQUEST_CHANGES or REJECT — in a single transaction.
+ *
+ * Every decision and every field edit is written to ModerationLog so admin
+ * actions are auditable.
  */
 export async function PATCH(
   request: NextRequest,
@@ -164,9 +184,14 @@ export async function PATCH(
     params: Promise<{ id: string }>;
   }
 ) {
-  const adminPassword = readAdminPassword(request);
+  let admin;
 
-  if (!validateAdminPassword(adminPassword)) {
+  try {
+    admin = await requireAdmin();
+  } catch (error) {
+    if (error instanceof PermissionError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -219,13 +244,25 @@ export async function PATCH(
   const scope = data.scope;
   const locationScope = isLocationScope(scope) ? scope : 'NATIONAL';
 
+  const decisionNote =
+    typeof data.decisionNote === 'string' ? data.decisionNote.trim() : '';
+
   let status: AllowedStatus | undefined;
   if (data.status !== undefined) {
     if (isAllowedStatus(data.status)) {
       status = data.status;
     } else {
-      errors.push('status must be APPROVED or REJECTED.');
+      errors.push('status must be APPROVED, CHANGES_REQUESTED or REJECTED.');
     }
+  }
+
+  // Reject and request-changes decisions must carry a message for the creator.
+  if (status === 'CHANGES_REQUESTED' && !decisionNote) {
+    errors.push('برای درخواست تغییر، پیام مدیر الزامی است.');
+  }
+
+  if (status === 'REJECTED' && !decisionNote) {
+    errors.push('برای رد صفحه، دلیل رد الزامی است.');
   }
 
   const types = has('types') ? parseTypes(data.types) : null;
@@ -297,7 +334,26 @@ export async function PATCH(
           ? [{ id: identifier }, { slug: identifier }]
           : [{ slug: identifier }],
       },
-      select: { id: true },
+      select: {
+        id: true,
+        name: true,
+        submittedById: true,
+        description: true,
+        workingHours: true,
+        imageUrl: true,
+        address: true,
+        scope: true,
+        provinceId: true,
+        cityId: true,
+        types: {
+          select: { kind: true, type: { select: { label: true } } },
+          orderBy: { order: 'asc' },
+        },
+        links: {
+          select: { platform: true, label: true, value: true },
+          orderBy: { createdAt: 'asc' },
+        },
+      },
     });
 
     if (!existing) {
@@ -339,6 +395,50 @@ export async function PATCH(
       }
     }
 
+    // Did the admin actually change canonical content? Used to decide whether
+    // an EDIT moderation log entry is warranted.
+    let contentChanged = false;
+
+    if (has('name') && (name ?? '') !== existing.name) contentChanged = true;
+    if (
+      description !== undefined &&
+      (description || null) !== existing.description
+    ) {
+      contentChanged = true;
+    }
+    if (
+      workingHours !== undefined &&
+      (workingHours || null) !== existing.workingHours
+    ) {
+      contentChanged = true;
+    }
+    if (imageUrl !== undefined && (imageUrl || null) !== existing.imageUrl) {
+      contentChanged = true;
+    }
+    if (address !== undefined && (address || null) !== existing.address) {
+      contentChanged = true;
+    }
+    if (
+      has('scope') &&
+      (locationScope !== existing.scope ||
+        provinceId !== existing.provinceId ||
+        cityId !== existing.cityId)
+    ) {
+      contentChanged = true;
+    }
+    if (types !== null && !typesEqual(types, existing.types.map((t) => ({ label: t.type.label, kind: t.kind })))) {
+      contentChanged = true;
+    }
+    if (
+      links !== null &&
+      !linksEqual(
+        links,
+        existing.links.map((l) => ({ platform: l.platform, label: l.label ?? undefined, value: l.value }))
+      )
+    ) {
+      contentChanged = true;
+    }
+
     const updatedTopic = await prisma.$transaction(async (tx) => {
       if (types !== null) {
         // Replace the page's types atomically.
@@ -352,7 +452,7 @@ export async function PATCH(
           const suggestion = await tx.topicTypeSuggestion.upsert({
             where: { label: type.label },
             update: {},
-            create: { label: type.label, status: 'PENDING' },
+            create: { label: type.label, status: 'PENDING_REVIEW' },
             select: { id: true },
           });
 
@@ -419,9 +519,65 @@ export async function PATCH(
           where: { topicId: existing.id },
           data: {
             status,
+            decisionNote: decisionNote || null,
+            decidedById: admin.id,
             decidedAt: new Date(),
           },
         });
+      }
+
+      const submission = await tx.submission.findUnique({
+        where: { topicId: existing.id },
+        select: { id: true },
+      });
+
+      // Audit: log the field edits when the admin changed canonical content.
+      if (contentChanged) {
+        await tx.moderationLog.create({
+          data: {
+            action: 'EDIT',
+            adminId: admin.id,
+            topicId: existing.id,
+            submissionId: submission?.id ?? null,
+          },
+        });
+      }
+
+      // Audit: log the moderation decision.
+      if (status !== undefined) {
+        await tx.moderationLog.create({
+          data: {
+            action: status === 'APPROVED' ? 'APPROVE' : status === 'REJECTED' ? 'REJECT' : 'REQUEST_CHANGES',
+            reason: decisionNote || null,
+            adminId: admin.id,
+            topicId: existing.id,
+            submissionId: submission?.id ?? null,
+          },
+        });
+
+        // Inbox message to the page's creator with the admin's response.
+        if (existing.submittedById && submission) {
+          await createNotification(tx, {
+            userId: existing.submittedById,
+            kind: 'SUBMISSION_DECISION',
+            topicId: existing.id,
+            refId: submission.id,
+            title:
+              status === 'APPROVED'
+                ? 'صفحه شما منتشر شد'
+                : status === 'REJECTED'
+                  ? 'صفحه شما رد شد'
+                  : 'درخواست اصلاح برای صفحه شما',
+            body:
+              status === 'APPROVED'
+                ? `صفحه «${existing.name}» تأیید و منتشر شد.`
+                : decisionNote
+                  ? `صفحه «${existing.name}»: ${decisionNote}`
+                  : status === 'REJECTED'
+                    ? `صفحه «${existing.name}» رد شد.`
+                    : `صفحه «${existing.name}» نیاز به اصلاح دارد.`,
+          });
+        }
       }
 
       return topic;

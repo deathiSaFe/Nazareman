@@ -2,30 +2,6 @@
 
 import { useState } from 'react';
 
-function getStoredAdminPassword(): string {
-  if (typeof window === 'undefined') {
-    return '';
-  }
-
-  const localPassword = window.localStorage.getItem('admin_password');
-
-  if (localPassword) {
-    return localPassword;
-  }
-
-  const cookieRow = document.cookie
-    .split('; ')
-    .find((row) => row.startsWith('admin_password='));
-
-  const cookieValue = cookieRow?.split('=')[1] ?? '';
-
-  try {
-    return decodeURIComponent(cookieValue);
-  } catch {
-    return cookieValue;
-  }
-}
-
 type PendingTypeSuggestion = {
   id: string;
   label: string;
@@ -64,7 +40,6 @@ export function TypeSuggestionsModerationClient({
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
-          'x-admin-password': encodeURIComponent(getStoredAdminPassword()),
         },
         body: JSON.stringify({ status }),
       });

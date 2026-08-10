@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { validateAdminPassword } from '@/lib/admin-auth';
+import { PermissionError, requireAdmin } from '@/lib/authorization';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -14,16 +14,6 @@ const MAX_BODY_LENGTH = 2000;
 
 type AllowedStatus = (typeof ALLOWED_STATUSES)[number];
 
-function readAdminPassword(request: NextRequest): string {
-  const raw = request.headers.get('x-admin-password') ?? '';
-
-  try {
-    return decodeURIComponent(raw);
-  } catch {
-    return raw;
-  }
-}
-
 function isAllowedStatus(value: unknown): value is AllowedStatus {
   return (
     typeof value === 'string' &&
@@ -33,8 +23,9 @@ function isAllowedStatus(value: unknown): value is AllowedStatus {
 
 /**
  * PATCH /api/admin/comments/[id]
- * Moderate a single comment from inside the page review: change its status
- * (approve/reject) and/or edit its body.
+ * Moderate a single comment (approve/reject and/or edit its body) as the
+ * authenticated admin. Every decision/change writes an audit ModerationLog
+ * carrying the admin's identity.
  */
 export async function PATCH(
   request: NextRequest,
@@ -42,10 +33,14 @@ export async function PATCH(
     params: Promise<{ id: string }>;
   }
 ) {
-  // Authorization is validated BEFORE any mutation.
-  const adminPassword = readAdminPassword(request);
+  let admin;
 
-  if (!validateAdminPassword(adminPassword)) {
+  try {
+    admin = await requireAdmin();
+  } catch (error) {
+    if (error instanceof PermissionError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -105,7 +100,7 @@ export async function PATCH(
 
     const existingComment = await prisma.comment.findUnique({
       where: { id: identifier },
-      select: { id: true },
+      select: { id: true, topicId: true },
     });
 
     if (!existingComment) {
@@ -115,18 +110,46 @@ export async function PATCH(
       );
     }
 
-    const updatedComment = await prisma.comment.update({
-      where: { id: existingComment.id },
-      data: {
-        ...(status !== undefined ? { status } : {}),
-        ...(rawBody !== undefined ? { body: rawBody } : {}),
-      },
-      select: {
-        id: true,
-        body: true,
-        status: true,
-        createdAt: true,
-      },
+    const updatedComment = await prisma.$transaction(async (tx) => {
+      const updated = await tx.comment.update({
+        where: { id: existingComment.id },
+        data: {
+          ...(status !== undefined ? { status } : {}),
+          ...(rawBody !== undefined ? { body: rawBody } : {}),
+        },
+        select: {
+          id: true,
+          body: true,
+          status: true,
+          createdAt: true,
+        },
+      });
+
+      // Audit: comment moderation decision.
+      if (status !== undefined) {
+        await tx.moderationLog.create({
+          data: {
+            action: status === 'APPROVED' ? 'COMMENT_APPROVE' : 'COMMENT_REJECT',
+            adminId: admin.id,
+            topicId: existingComment.topicId,
+            commentId: existingComment.id,
+          },
+        });
+      }
+
+      // Audit: comment body edit.
+      if (rawBody !== undefined) {
+        await tx.moderationLog.create({
+          data: {
+            action: 'EDIT',
+            adminId: admin.id,
+            topicId: existingComment.topicId,
+            commentId: existingComment.id,
+          },
+        });
+      }
+
+      return updated;
     });
 
     return NextResponse.json(updatedComment);
@@ -135,6 +158,79 @@ export async function PATCH(
 
     return NextResponse.json(
       { error: 'Failed to update comment.' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * DELETE /api/admin/comments/[id]
+ * Permanently remove a comment (top-level comments cascade their replies).
+ * Admin-only, enforced server-side; every deletion writes an audit log.
+ * The author's rating/identity are untouched — only the comment row is gone.
+ */
+export async function DELETE(
+  request: NextRequest,
+  context: {
+    params: Promise<{ id: string }>;
+  }
+) {
+  let admin;
+
+  try {
+    admin = await requireAdmin();
+  } catch (error) {
+    if (error instanceof PermissionError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  try {
+    const { id } = await context.params;
+    const identifier = id.trim();
+
+    if (!identifier || !UUID_REGEX.test(identifier)) {
+      return NextResponse.json(
+        { error: 'Comment not found.' },
+        { status: 404 }
+      );
+    }
+
+    const existingComment = await prisma.comment.findUnique({
+      where: { id: identifier },
+      select: { id: true, topicId: true },
+    });
+
+    if (!existingComment) {
+      return NextResponse.json(
+        { error: 'Comment not found.' },
+        { status: 404 }
+      );
+    }
+
+    await prisma.$transaction(async (tx) => {
+      // Audit the deletion BEFORE removing the row (the log keeps a snapshot
+      // reference via SetNull when the comment row is gone).
+      await tx.moderationLog.create({
+        data: {
+          action: 'COMMENT_DELETE',
+          adminId: admin.id,
+          topicId: existingComment.topicId,
+          commentId: existingComment.id,
+        },
+      });
+
+      // Replies cascade with the parent comment.
+      await tx.comment.delete({ where: { id: existingComment.id } });
+    });
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error('Failed to delete comment:', error);
+
+    return NextResponse.json(
+      { error: 'Failed to delete comment.' },
       { status: 500 }
     );
   }

@@ -111,14 +111,23 @@ export interface PageType {
   kind: TopicTypeKind;
   /** Admin-only: the suggestion behind this type (for inline approval). */
   suggestionId?: string;
-  suggestionStatus?: 'PENDING' | 'APPROVED' | 'REJECTED';
+  suggestionStatus?: 'PENDING_REVIEW' | 'APPROVED' | 'REJECTED';
 }
 
 export interface PageComment {
   id: string;
   body: string;
-  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  status: 'PENDING_REVIEW' | 'APPROVED' | 'REJECTED';
   createdAt: string;
+  authorId?: string | null;
+  authorName?: string | null;
+  /** null = top-level comment; otherwise the parent top-level comment id. */
+  parentId?: string | null;
+  isReply?: boolean;
+  /** True only when an approved PageOwnership(topicId, authorId) row exists. */
+  isOwner?: boolean;
+  /** The author's 1–5 rating on this topic (read-only; null when not rated). */
+  rating?: number | null;
 }
 
 /**
@@ -134,7 +143,7 @@ export interface PageData {
   imageUrl: string | null;
   address: string | null;
   scope: LocationScope;
-  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  status: 'DRAFT' | 'PENDING_REVIEW' | 'APPROVED' | 'CHANGES_REQUESTED' | 'REJECTED';
   province: { id: string; name: string; slug: string } | null;
   city: { id: string; name: string; slug: string } | null;
   types: PageType[];
@@ -159,7 +168,7 @@ export interface DuplicateTopic {
   name: string;
   /** Ordered labels — the primary type comes first. */
   types: string[];
-  status: 'APPROVED' | 'PENDING';
+  status: 'APPROVED' | 'DRAFT' | 'PENDING_REVIEW' | 'CHANGES_REQUESTED' | 'REJECTED';
   locationLabel: string;
   score: number;
 }
@@ -172,11 +181,17 @@ export interface TopicTypeSuggestion {
 
 /**
  * Permanent topic page URL — the `/topic/[id]` route accepts a UUID (any
- * status) or a slug (approved topics only). Centralized so every link stays
- * consistent.
+ * status) or a slug (approved topics only). APPROVED topics use their public
+ * slug; any other status is only reachable by UUID (the API serves
+ * non-approved pages to the creator/admin via UUID, never via slug).
  */
-export function topicHref(topic: Pick<TopicSearchResult, 'id' | 'slug'>): string {
-  return `/topic/${topic.slug ?? topic.id}`;
+export function topicHref(topic: {
+  id: string;
+  slug: string | null;
+  status?: string;
+}): string {
+  const isNonApproved = Boolean(topic.status && topic.status !== 'APPROVED');
+  return `/topic/${isNonApproved ? topic.id : (topic.slug ?? topic.id)}`;
 }
 
 /** Render the primary type label from an ordered list of labels. */

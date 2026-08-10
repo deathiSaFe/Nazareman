@@ -2,12 +2,8 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { prisma } from '@/lib/prisma';
 import { PageView } from '@/components/page/PageView';
+import { getAdmin } from '@/lib/authorization';
 import { AdminLoginForm } from '@/components/admin/AdminLoginForm';
-import {
-  getAdminPassword,
-  validateAdminPassword,
-  getAdminPasswordFromCookie,
-} from '@/lib/admin-auth';
 import type { PageData } from '@/types/topic';
 
 export const dynamic = 'force-dynamic';
@@ -21,8 +17,15 @@ export default async function AdminPageReviewPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
+  const admin = await getAdmin();
+
+  if (!admin) {
+    return <AdminLoginForm />;
+  }
+
   const { id } = await params;
-  const identifier = id.trim();
+  // Normalize the path param (non-ASCII slugs can arrive percent-encoded).
+  const identifier = decodeURIComponent(id).trim();
 
   const page = await prisma.topic.findFirst({
     where: {
@@ -66,24 +69,79 @@ export default async function AdminPageReviewPage({
           body: true,
           status: true,
           createdAt: true,
+          authorId: true,
+          parentId: true,
+          author: {
+            select: { displayName: true },
+          },
         },
         orderBy: { createdAt: 'asc' },
       },
     },
   });
 
-  if (!getAdminPassword()) {
-    return <AdminLoginForm notConfigured />;
-  }
-
-  const adminPassword = await getAdminPasswordFromCookie();
-
-  if (!validateAdminPassword(adminPassword)) {
-    return <AdminLoginForm hasInvalidCookie={adminPassword.length > 0} />;
-  }
-
   if (!page) {
     notFound();
+  }
+
+  // Owner badge on comments: only an approved PageOwnership(topicId, authorId)
+  // row marks a comment author as owner (never submittedById).
+  const commentAuthorIds = [
+    ...new Set(
+      page.comments.map((comment) => comment.authorId).filter((id): id is string => Boolean(id))
+    ),
+  ];
+
+  const commentOwnerRows =
+    commentAuthorIds.length > 0
+      ? await prisma.pageOwnership.findMany({
+          where: { topicId: page.id, userId: { in: commentAuthorIds } },
+          select: { userId: true },
+        })
+      : [];
+
+  const commentOwnerIds = new Set(commentOwnerRows.map((row) => row.userId));
+
+  // Each comment shows its author's rating on this topic (read-only; null when
+  // the author has not rated — comments on non-APPROVED pages have no rating).
+  const commentAuthorRatingRows =
+    commentAuthorIds.length > 0
+      ? await prisma.rating.findMany({
+          where: { topicId: page.id, userId: { in: commentAuthorIds } },
+          select: { userId: true, value: true },
+        })
+      : [];
+
+  const commentAuthorRatingByUser = new Map(
+    commentAuthorRatingRows.map((row) => [row.userId, row.value])
+  );
+
+  const moderationHistory = await prisma.moderationLog.findMany({
+    where: { topicId: page.id },
+    orderBy: { createdAt: 'desc' },
+    take: 15,
+    select: { id: true, action: true, reason: true, createdAt: true },
+  });
+
+  const ACTION_LABELS: Record<string, string> = {
+    APPROVE: 'تأیید صفحه',
+    REJECT: 'رد صفحه',
+    REQUEST_CHANGES: 'درخواست تغییر',
+    EDIT: 'ویرایش توسط مدیر',
+  };
+
+  function formatHistoryDate(value: Date): string {
+    try {
+      return value.toLocaleDateString('fa-IR', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    } catch {
+      return '';
+    }
   }
 
   const data: PageData = {
@@ -107,7 +165,7 @@ export default async function AdminPageReviewPage({
       label: tag.type.label,
       kind: tag.kind,
       suggestionId: tag.typeId,
-      suggestionStatus: tag.type.status,
+      suggestionStatus: tag.type.status as 'PENDING_REVIEW' | 'APPROVED' | 'REJECTED',
     })),
     links: page.links.map((link) => ({
       id: link.id,
@@ -118,8 +176,16 @@ export default async function AdminPageReviewPage({
     comments: page.comments.map((comment) => ({
       id: comment.id,
       body: comment.body,
-      status: comment.status,
+      status: comment.status as 'PENDING_REVIEW' | 'APPROVED' | 'REJECTED',
       createdAt: comment.createdAt.toISOString(),
+      authorId: comment.authorId,
+      authorName: comment.author?.displayName ?? null,
+      parentId: comment.parentId,
+      isReply: comment.parentId !== null,
+      isOwner: comment.authorId ? commentOwnerIds.has(comment.authorId) : false,
+      rating: comment.authorId
+        ? (commentAuthorRatingByUser.get(comment.authorId) ?? null)
+        : null,
     })),
   };
 
@@ -135,7 +201,7 @@ export default async function AdminPageReviewPage({
           </Link>
 
           <a
-            href={`/topic/${page.slug ?? page.id}`}
+            href={`/topic/${page.status === 'APPROVED' ? (page.slug ?? page.id) : page.id}`}
             target="_blank"
             rel="noopener noreferrer"
             className="text-[13px] font-medium text-ink-500 underline underline-offset-4 transition-colors hover:text-turquoise-700"
@@ -156,6 +222,32 @@ export default async function AdminPageReviewPage({
         <div className="mt-6">
           <PageView page={data} admin />
         </div>
+
+        {moderationHistory.length > 0 && (
+          <section className="mt-8 rounded-3xl bg-white p-5 ring-1 ring-ink-900/[0.06]">
+            <h2 className="font-display text-lg text-ink-900">تاریخچه بررسی</h2>
+
+            <ul className="mt-3 divide-y divide-ink-900/[0.06]">
+              {moderationHistory.map((log) => (
+                <li key={log.id} className="py-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-[13px] font-bold text-ink-800">
+                      {ACTION_LABELS[log.action] ?? log.action}
+                    </span>
+                    <span className="text-[11px] text-ink-400">
+                      {formatHistoryDate(log.createdAt)}
+                    </span>
+                  </div>
+                  {log.reason && (
+                    <p className="mt-1 text-[13px] leading-6 text-ink-600">
+                      {log.reason}
+                    </p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
       </div>
     </main>
   );

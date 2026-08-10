@@ -77,6 +77,7 @@ export type PublicUser = {
   id: string;
   phoneNumber: string;
   displayName: string | null;
+  avatarUrl: string | null;
   phoneVerified: boolean;
   role: 'USER' | 'ADMIN';
 };
@@ -86,6 +87,7 @@ export function publicUser(user: {
   id: string;
   phoneNumber: string;
   displayName: string | null;
+  avatarUrl: string | null;
   phoneVerified: boolean;
   role: 'USER' | 'ADMIN';
 }): PublicUser {
@@ -93,6 +95,7 @@ export function publicUser(user: {
     id: user.id,
     phoneNumber: user.phoneNumber,
     displayName: user.displayName,
+    avatarUrl: user.avatarUrl,
     phoneVerified: user.phoneVerified,
     role: user.role,
   };

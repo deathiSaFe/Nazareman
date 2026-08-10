@@ -2,12 +2,18 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
-import { CheckIcon, PenIcon, PlusIcon, XIcon } from '@/components/icons';
+import { useRouter } from 'next/navigation';
+import { BubbleIcon, CheckIcon, HeartIcon, PenIcon, PlusIcon, TrashIcon, UserIcon, XIcon } from '@/components/icons';
 import { ContactIcon } from '@/components/contact-icons';
 import { ActivityAreaPicker } from '@/components/add-topic/ActivityAreaPicker';
 import { TopicTypesField } from '@/components/add-topic/TopicTypesField';
-import { CommentForm } from '@/components/topic/CommentForm';
+import { CommentComposer } from '@/components/topic/CommentComposer';
+import { ReplyForm } from '@/components/topic/ReplyForm';
+import { StarRow } from '@/components/topic/RatingStars';
+import { OwnershipRequestPanel } from '@/components/ownership/OwnershipRequestPanel';
 import { OnboardingPopup } from '@/components/page/OnboardingPopup';
+import { SuggestionPanel } from '@/components/suggestion/SuggestionPanel';
+import { toPersianDecimal, toPersianDigits } from '@/lib/persian-digits';
 import {
   CONTACT_PLATFORM_LABELS,
   type ActivityAreaValue,
@@ -18,16 +24,43 @@ import {
 
 interface PageViewProps {
   page: PageData;
-  /** Show the inline contribution editors (image/intro/hours/contact/social/address).
-   *  True for the verified creator/admin; otherwise false. */
+  /** Show the inline contribution editors (image/intro/hours/contact/social/address
+   *  and, for the creator, identity). True for the verified creator of an
+   *  editable page and for admins. */
   editable?: boolean;
+  /** Whether the viewer (creator) may submit the page for review. */
+  canSubmit?: boolean;
+  /** The admin's decision note for CHANGES_REQUESTED / REJECTED pages. */
+  decisionNote?: string | null;
+  /** Whether the viewer may submit a suggestion (verified user on an APPROVED page). */
+  canSuggest?: boolean;
   /** Whether the viewer may submit a new comment (signed-in + phone-verified). */
   canComment?: boolean;
+  /** Whether the viewer may reply to comments (signed-in + phone-verified). */
+  canReply?: boolean;
+  /** Rating/favorite state (APPROVED topics; viewer-scoped). */
+  averageRating?: number | null;
+  ratingCount?: number;
+  myRating?: number | null;
+  isFavorited?: boolean;
+  canRate?: boolean;
+  canFavorite?: boolean;
+  /** Ownership-request state (APPROVED topics; viewer-scoped). */
+  canRequestOwnership?: boolean;
+  viewerIsOwner?: boolean;
+  myOwnershipRequest?: {
+    id: string;
+    status: 'PENDING_REVIEW' | 'CHANGES_REQUESTED' | 'APPROVED' | 'REJECTED';
+    decisionNote: string | null;
+  } | null;
   /** Whether the viewer already left a comment on this page. */
   hasCommented?: boolean;
   /** Admin mode: additionally exposes identity editing, publish controls and
    *  inline moderation. */
   admin?: boolean;
+  /** Intent carried back after quick verification, e.g. `comment`, `rating`,
+   *  `favorite`, `suggestion`, `ownership`. Auto-opens/focuses that action. */
+  initialAction?: string | null;
 }
 
 const SOCIAL_PLATFORMS = (
@@ -38,30 +71,6 @@ type DraftLink = { platform: ContactPlatform; label: string | null; value: strin
 
 const inputClass =
   'w-full rounded-2xl bg-white px-4 py-3 text-[15px] font-medium text-ink-900 outline-none ring-1 ring-ink-900/10 transition-all duration-200 placeholder:font-normal placeholder:text-ink-900/30 focus:ring-2 focus:ring-turquoise-600/70';
-
-function getAdminPassword(): string {
-  if (typeof window === 'undefined') {
-    return '';
-  }
-
-  const localPassword = window.localStorage.getItem('admin_password');
-
-  if (localPassword) {
-    return localPassword;
-  }
-
-  const cookieRow = document.cookie
-    .split('; ')
-    .find((row) => row.startsWith('admin_password='));
-
-  const cookieValue = cookieRow?.split('=')[1] ?? '';
-
-  try {
-    return decodeURIComponent(cookieValue);
-  } catch {
-    return cookieValue;
-  }
-}
 
 /** Compact Persian date for a comment timestamp. */
 function formatCommentDate(value: string): string {
@@ -74,11 +83,6 @@ function formatCommentDate(value: string): string {
   } catch {
     return '';
   }
-}
-
-/** 0-9 → ۰-۹ for Persian numeral rendering. */
-function persianNumber(value: number | string): string {
-  return String(value).replace(/\d/g, (digit) => '۰۱۲۳۴۵۶۷۸۹'[Number(digit)]);
 }
 
 /** Session key that remembers the onboarding popup was dismissed this session. */
@@ -246,7 +250,7 @@ function ContactRow({
   );
 }
 
-export function PageView({ page, editable = true, canComment = true, hasCommented = false, admin = false }: PageViewProps) {
+export function PageView({ page, editable = true, canSubmit = false, decisionNote = null, canSuggest = false, canComment = true, canReply = false, hasCommented = false, averageRating = null, ratingCount = 0, myRating = null, isFavorited = false, canRate = false, canFavorite = false, canRequestOwnership = false, viewerIsOwner = false, myOwnershipRequest = null, admin = false, initialAction = null }: PageViewProps) {
   const [name, setName] = useState(page.name);
   const [description, setDescription] = useState(page.description ?? '');
   const [workingHours, setWorkingHours] = useState(page.workingHours ?? '');
@@ -272,7 +276,7 @@ export function PageView({ page, editable = true, canComment = true, hasCommente
     page.types
       .filter(
         (type): type is typeof type & { suggestionId: string } =>
-          type.suggestionStatus === 'PENDING' && Boolean(type.suggestionId)
+          type.suggestionStatus === 'PENDING_REVIEW' && Boolean(type.suggestionId)
       )
       .map((type) => ({ id: type.suggestionId, label: type.label }))
   );
@@ -284,9 +288,175 @@ export function PageView({ page, editable = true, canComment = true, hasCommente
   const [addressOpen, setAddressOpen] = useState(false);
   const [identityOpen, setIdentityOpen] = useState(false);
 
+  // Admin decision note (reason for reject / message for request-changes).
+  const [adminNote, setAdminNote] = useState('');
+
+  // Suggestion drawer for APPROVED pages.
+  const [suggestOpen, setSuggestOpen] = useState(false);
+
+  // Ownership request panel for APPROVED pages.
+  const [ownershipOpen, setOwnershipOpen] = useState(false);
+
+  const router = useRouter();
+
+  // Rating + favorite local state (mirrors the server values). `commentRating`
+  // is the ONE shared rating selection used by the comment composer, so there
+  // is never a second, independent rating.
+  const [averageRatingState, setAverageRatingState] = useState<number | null>(averageRating);
+  const [ratingCountState, setRatingCountState] = useState(ratingCount);
+  const [commentRating, setCommentRating] = useState<number>(myRating ?? 0);
+  const [isFavoritedState, setIsFavoritedState] = useState(isFavorited);
+  const [ratingBusy, setRatingBusy] = useState(false);
+  const [focusCommentNonce, setFocusCommentNonce] = useState(0);
+  const [commentComposerOpen, setCommentComposerOpen] = useState(false);
+
+  /** Session key that remembers a star picked right before quick verification,
+   *  so the intended rating can be applied once the user returns. */
+  const intendedRatingKey = `nazareman_intended_rating_${page.id}`;
+
+  /** Send a verified/authenticated user through the shared quick verification
+   *  flow, returning to this page to continue the intended action. When a
+   *  rating is included, it is stashed so it can be applied after returning. */
+  function requireVerify(action: string, rating?: number) {
+    if (rating !== undefined) {
+      try {
+        window.sessionStorage.setItem(intendedRatingKey, String(rating));
+      } catch {
+        // ignore — the return-intent simply continues without a stashed rating.
+      }
+    }
+    const next = `/topic/${page.id}?action=${action}`;
+    router.push(`/login?next=${encodeURIComponent(next)}`);
+  }
+
+  /** Read and clear a stashed pre-verification rating for this topic. */
+  function readIntendedRating(): number | null {
+    try {
+      const raw = window.sessionStorage.getItem(intendedRatingKey);
+      window.sessionStorage.removeItem(intendedRatingKey);
+      if (raw === null) return null;
+      const value = Number(raw);
+      return Number.isInteger(value) && value >= 1 && value <= 5 ? value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Open the comment composer overlay and focus its textarea. */
+  function openComposer() {
+    setCommentComposerOpen(true);
+    setFocusCommentNonce((n) => n + 1);
+  }
+
+  /** «ثبت نظر» — verified users open the composer (the composer enforces the
+   *  mandatory star rating); everyone else goes through the existing quick
+   *  verification flow first. */
+  function handleCommentClick() {
+    if (canRate) {
+      openComposer();
+    } else {
+      requireVerify('comment');
+    }
+  }
+
+  async function handleRate(value: number) {
+    if (!canRate || ratingBusy) return;
+    setRatingBusy(true);
+    clearFeedback();
+
+    // Keep the single rating selection in sync immediately.
+    setCommentRating(value);
+
+    try {
+      const response = await fetch(`/api/topics/${page.id}/rating`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value }),
+      });
+
+      const payload = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        setError(payload?.error ?? 'ثبت امتیاز ممکن نشد.');
+        return;
+      }
+
+      setAverageRatingState(payload?.averageRating ?? null);
+      setRatingCountState(payload?.ratingCount ?? ratingCountState);
+
+      // Encourage commenting: after choosing a rating, open the composer so the
+      // user can immediately write their experience — never scroll past the
+      // existing comments.
+      if (!hasCommented && canComment && !commentSubmitted) {
+        openComposer();
+      }
+    } catch {
+      setError('ثبت امتیاز ممکن نشد.');
+    } finally {
+      setRatingBusy(false);
+    }
+  }
+
+  async function handleToggleFavorite() {
+    if (!canFavorite) return;
+    clearFeedback();
+
+    try {
+      const response = isFavoritedState
+        ? await fetch(`/api/favorites/${page.id}`, { method: 'DELETE' })
+        : await fetch('/api/favorites', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ topicId: page.id }),
+          });
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        setError(payload?.error ?? 'عملیات علاقه‌مندی ممکن نشد.');
+        return;
+      }
+
+      setIsFavoritedState((current) => !current);
+    } catch {
+      setError('عملیات علاقه‌مندی ممکن نشد.');
+    }
+  }
+
+  // Continue the intended action after quick verification (the topic page
+  // re-renders server-side with the action query param once the user is back).
+  // State updates are deferred so the effect body stays side-effect free.
+  useEffect(() => {
+    if (!initialAction) return;
+
+    const timer = window.setTimeout(() => {
+      if (initialAction === 'favorite' && canFavorite && !isFavoritedState) {
+        void handleToggleFavorite();
+      } else if (initialAction === 'suggestion' && canSuggest) {
+        setSuggestOpen(true);
+      } else if (initialAction === 'ownership' && canRequestOwnership) {
+        setOwnershipOpen(true);
+      } else if (initialAction === 'comment' && canRate) {
+        openComposer();
+      } else if (initialAction === 'rating' && canRate) {
+        // Apply a star picked right before verification, when one was stashed.
+        const intended = readIntendedRating();
+        if (intended !== null && intended !== myRating) {
+          void handleRate(intended);
+        }
+        document.getElementById('page-hero')?.scrollIntoView({ behavior: 'smooth' });
+      }
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialAction]);
+
   // Once a comment is submitted, replace the form with the «already commented»
-  // state immediately (the server enforces the one-comment-per-topic rule).
+  // state immediately (the server enforces the one-contribution-per-topic rule).
   const [commentSubmitted, setCommentSubmitted] = useState(false);
+
+  // Which top-level comment the reply form is currently open for.
+  const [replyingToId, setReplyingToId] = useState<string | null>(null);
 
   // Contact editor (add or edit one row)
   const [contactDraft, setContactDraft] = useState<{ platform: ContactPlatform; label: string; value: string }>({
@@ -297,7 +467,7 @@ export function PageView({ page, editable = true, canComment = true, hasCommente
   const [contactEditIndex, setContactEditIndex] = useState<number | null>(null);
   const [contactAddOpen, setContactAddOpen] = useState(false);
 
-  // One-time onboarding nudge for a newly-created PENDING page: it encourages
+  // One-time onboarding nudge for a newly-created DRAFT page: it encourages
   // the creator to complete the info and leave the first comment. It is skipped
   // when the page is already complete, and dismissal is remembered in
   // sessionStorage so it does not reappear during the same editing session.
@@ -321,7 +491,7 @@ export function PageView({ page, editable = true, canComment = true, hasCommente
   );
   const [onboardingDismissedNow, setOnboardingDismissedNow] = useState(false);
   const onboardingOpen =
-    !admin && page.status === 'PENDING' && !onboardingAlreadyComplete && !onboardingDismissed && !onboardingDismissedNow;
+    !admin && page.status === 'DRAFT' && !onboardingAlreadyComplete && !onboardingDismissed && !onboardingDismissedNow;
 
   function dismissOnboarding() {
     setOnboardingDismissedNow(true);
@@ -418,28 +588,267 @@ export function PageView({ page, editable = true, canComment = true, hasCommente
   };
 
   // ——— Final review/submission ———
-  const showSendButton = !admin && status === 'PENDING' && !submitted;
+  // The submit-for-review action is available to the creator only while the
+  // page is DRAFT, CHANGES_REQUESTED or REJECTED — never while under review or
+  // approved.
+  const showSendButton = Boolean(canSubmit && !submitted && status !== 'APPROVED');
 
   function handleCommentSubmitted(comment: {
     id: string;
     body: string;
-    status: 'PENDING' | 'APPROVED' | 'REJECTED';
+    status: 'PENDING_REVIEW' | 'APPROVED' | 'REJECTED';
     createdAt: string;
+    authorName?: string | null;
   }) {
-    setComments((prev) => [...prev, comment]);
+    setComments((prev) => [
+      ...prev,
+      // The freshly submitted comment joins the review list immediately (it is
+      // still pending moderation server-side). Its rating is the selection the
+      // composer used — the same shared rating state — and the author name
+      // comes from the server so «علی» never shows as «کاربر».
+      {
+        ...comment,
+        authorName: comment.authorName ?? null,
+        rating: commentRating || null,
+        isReply: false,
+      },
+    ]);
     // A user may only comment once per topic, so a successful submission marks
     // the «اولین نظر» step complete and the bar moves to the final review step
-    // (derived from `comments.length`). The form is replaced right away so the
-    // server-side one-comment rule and the refresh agree.
+    // (derived from `comments.length`). The composer closes so the user lands
+    // back on the page with the fresh comment in place.
     setCommentSubmitted(true);
+    setCommentComposerOpen(false);
   }
+
+  function handleReplySubmitted(reply: {
+    id: string;
+    body: string;
+    status: 'PENDING_REVIEW' | 'APPROVED' | 'REJECTED';
+    createdAt: string;
+    parentId: string;
+  }) {
+    setComments((prev) => [...prev, reply]);
+  }
+
+  /** One comment or reply card (replies are indented and labelled). The
+   *  author name lives in the group header for top-level comments; replies
+   *  show their own name inline. Each comment shows its author's rating. */
+  function renderCommentCard(comment: (typeof comments)[number], isReply: boolean) {
+    const isPending = comment.status === 'PENDING_REVIEW';
+    const isEditing = editingCommentId === comment.id;
+
+    return (
+      <article
+        className={`py-3 ${isPending ? 'border-s-4 border-red-400 ps-3' : ''} ${isReply ? 'ps-3' : ''}`}
+      >
+        {admin && isEditing ? (
+          <div>
+            <textarea
+              value={commentEditBody}
+              onChange={(event) => setCommentEditBody(event.target.value)}
+              rows={3}
+              className={`${inputClass} resize-none`}
+            />
+            <div className="mt-2 flex gap-2">
+              <button
+                type="button"
+                onClick={() => void moderateComment(comment.id, { body: commentEditBody.trim() })}
+                className="rounded-full bg-turquoise-600 px-5 py-2 text-xs font-bold text-white transition-colors hover:bg-turquoise-700"
+              >
+                ذخیره
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingCommentId(null);
+                  setCommentEditBody('');
+                }}
+                className="rounded-full bg-white px-5 py-2 text-xs font-bold text-ink-600 ring-1 ring-ink-900/15 transition-colors hover:bg-ink-900/5"
+              >
+                انصراف
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            {isReply && (comment.authorName || comment.isOwner) && (
+              <div className="mb-1 flex items-center gap-2">
+                <span className="text-[11px] font-medium text-ink-400">پاسخ</span>
+                <span className="text-[12px] font-bold text-ink-600">
+                  {comment.authorName || 'کاربر'}
+                </span>
+                {comment.isOwner && (
+                  <span className="rounded-full bg-turquoise-600/10 px-2.5 py-0.5 text-[10px] font-bold text-turquoise-700">
+                    مالک صفحه
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Author rating + timestamp — the review metadata line. */}
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              {comment.rating ? (
+                <StarRow value={comment.rating} className="text-[12px] leading-none" />
+              ) : null}
+              {comment.createdAt && (
+                <span className="text-[11px] text-ink-400">
+                  {formatCommentDate(comment.createdAt)}
+                </span>
+              )}
+            </div>
+
+            <p className="mt-1 whitespace-pre-line break-words text-[14px] leading-7 text-ink-800">
+              {comment.body}
+            </p>
+
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+              {/* Like/dislike are visual-only controls for now — no votes,
+                  no persistence, no ordering changes. */}
+              <div className="flex items-center gap-0.5">
+                <button
+                  type="button"
+                  aria-label="پسندیدن"
+                  className="grid size-7 place-items-center rounded-full text-[13px] leading-none text-ink-400 transition-colors hover:bg-ink-900/5"
+                >
+                  👍
+                </button>
+                <button
+                  type="button"
+                  aria-label="نپسندیدن"
+                  className="grid size-7 place-items-center rounded-full text-[13px] leading-none text-ink-400 transition-colors hover:bg-ink-900/5"
+                >
+                  👎
+                </button>
+              </div>
+
+              {/* Moderation status badges are admin-only — public viewers must
+                  not see «تأیید شد» / moderation states on comments. */}
+              {admin && comment.status === 'PENDING_REVIEW' && (
+                <span className="rounded-full bg-red-600/10 px-2.5 py-0.5 text-[12px] font-bold text-red-700">
+                  در انتظار بررسی
+                </span>
+              )}
+              {admin && comment.status === 'APPROVED' && (
+                <span className="rounded-full bg-emerald-600/10 px-2.5 py-0.5 text-[12px] font-bold text-emerald-700">
+                  تأییدشده
+                </span>
+              )}
+              {admin && comment.status === 'REJECTED' && (
+                <span className="rounded-full bg-ink-900/5 px-2.5 py-0.5 text-[12px] font-bold text-ink-500">
+                  رد شده
+                </span>
+              )}
+
+              {/* Verified users may reply to a top-level comment. */}
+              {canReply && !admin && !isReply && !replyingToId && (
+                <button
+                  type="button"
+                  onClick={() => setReplyingToId(comment.id)}
+                  className="text-[12px] font-semibold text-turquoise-700 transition-colors hover:text-turquoise-800"
+                >
+                  پاسخ
+                </button>
+              )}
+
+              {admin && (
+                <div className="ms-auto flex gap-2">
+                  {comment.status !== 'APPROVED' && (
+                    <button
+                      type="button"
+                      onClick={() => void moderateComment(comment.id, { status: 'APPROVED' })}
+                      className="rounded-full bg-turquoise-600 px-4 py-1.5 text-xs font-bold text-white transition-colors hover:bg-turquoise-700"
+                    >
+                      تأیید
+                    </button>
+                  )}
+                  {comment.status !== 'REJECTED' && (
+                    <button
+                      type="button"
+                      onClick={() => void moderateComment(comment.id, { status: 'REJECTED' })}
+                      className="rounded-full bg-white px-4 py-1.5 text-xs font-bold text-red-700 ring-1 ring-red-200 transition-colors hover:bg-red-50"
+                    >
+                      رد
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingCommentId(comment.id);
+                      setCommentEditBody(comment.body);
+                    }}
+                    className="grid size-8 place-items-center rounded-full bg-ink-900/5 text-ink-600 transition-colors hover:bg-ink-900/10"
+                    aria-label="ویرایش نظر"
+                  >
+                    <PenIcon strokeWidth={2.2} className="size-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (window.confirm('این نظر برای همیشه حذف شود؟')) {
+                        void deleteComment(comment.id);
+                      }
+                    }}
+                    className="grid size-8 place-items-center rounded-full bg-red-50 text-red-600 transition-colors hover:bg-red-100"
+                    aria-label="حذف نظر"
+                    title="حذف نظر"
+                  >
+                    <TrashIcon strokeWidth={2.2} className="size-3.5" />
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {!admin && replyingToId === comment.id && (
+              <div className="mt-2">
+                <ReplyForm
+                  topicId={page.id}
+                  commentId={comment.id}
+                  onSubmitted={handleReplySubmitted}
+                  onCancel={() => setReplyingToId(null)}
+                />
+              </div>
+            )}
+          </>
+        )}
+      </article>
+    );
+  }
+
+  /** Fallback display name for a comment author with no profile name. */
+  function commentAuthorName(comment: (typeof comments)[number]): string {
+    return comment.authorName || 'کاربر';
+  }
+
+  /** Top-level comments grouped by author — one review frame per user. */
+  const commentGroups = comments
+    .filter((comment) => !comment.isReply)
+    .reduce<{ key: string; isOwner: boolean; comments: (typeof comments)[number][] }[]>(
+      (groups, comment) => {
+        const key = comment.authorId ?? `anon-${comment.id}`;
+        const existing = groups.find((group) => group.key === key);
+        if (existing) {
+          existing.comments.push(comment);
+          existing.isOwner = existing.isOwner || Boolean(comment.isOwner);
+        } else {
+          groups.push({
+            key,
+            isOwner: Boolean(comment.isOwner),
+            comments: [comment],
+          });
+        }
+        return groups;
+      },
+      []
+    );
 
   async function handleConfirmSubmit() {
     setSubmitting(true);
+    clearFeedback();
 
     // Everything is already saved incrementally; a final save of the current
     // state guarantees no in-editor text is lost before it goes for review.
-    const ok = await savePage({
+    const saved = await savePage({
       description: description.trim(),
       workingHours: workingHours.trim(),
       imageUrl: imageUrl.trim(),
@@ -447,15 +856,36 @@ export function PageView({ page, editable = true, canComment = true, hasCommente
       links: links.map((link) => ({ platform: link.platform, label: link.label, value: link.value })),
     });
 
-    setSubmitting(false);
+    if (!saved) {
+      setSubmitting(false);
+      return;
+    }
 
-    if (ok) {
+    try {
+      const response = await fetch(`/api/topics/${page.id}/submit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      const payload = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        setError(payload?.error ?? 'ارسال صفحه برای بررسی ممکن نشد.');
+        setSubmitting(false);
+        return;
+      }
+
+      setSubmitting(false);
       setConfirmOpen(false);
       clearFeedback();
+      setStatus('PENDING_REVIEW');
       setSubmitted(true);
       // Scroll immediately so the success screen starts at the top regardless
       // of where the confirm action was clicked.
       window.scrollTo(0, 0);
+    } catch {
+      setError('ارسال صفحه برای بررسی ممکن نشد.');
+      setSubmitting(false);
     }
   }
 
@@ -469,12 +899,9 @@ export function PageView({ page, editable = true, canComment = true, hasCommente
     setSaving(true);
 
     // In admin mode all saves go through the admin endpoint so editing works
-    // for pages in any state (including rejected) and uses admin auth.
+    // for pages in any state (including rejected) and uses the session admin.
     const url = admin ? `/api/admin/topics/${page.id}` : `/api/topics/${page.id}`;
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (admin) {
-      headers['x-admin-password'] = encodeURIComponent(getAdminPassword());
-    }
 
     try {
       const response = await fetch(url, {
@@ -505,7 +932,46 @@ export function PageView({ page, editable = true, canComment = true, hasCommente
     }
   }
 
-  async function saveAdmin(nextStatus?: 'APPROVED' | 'REJECTED') {
+  /** Save the identity fields (name / types / location) as the creator. */
+  async function saveIdentity() {
+    clearFeedback();
+    setSaving(true);
+
+    try {
+      const response = await fetch(`/api/topics/${page.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: name.trim(),
+          types: types.map((type) => ({ label: type.label, kind: type.kind })),
+          scope: activity.scope,
+          provinceSlug: activity.provinceSlug,
+          citySlug: activity.citySlug,
+          address: address.trim(),
+        }),
+      });
+
+      const payload = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        setError(payload?.error ?? 'ذخیره ممکن نشد.');
+        return false;
+      }
+
+      setMessage('ذخیره شد.');
+      return true;
+    } catch {
+      setError('ذخیره ممکن نشد.');
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveAdmin(
+    nextStatus?: 'APPROVED' | 'CHANGES_REQUESTED' | 'REJECTED',
+    note?: string
+  ) {
     clearFeedback();
     setSaving(true);
 
@@ -521,6 +987,7 @@ export function PageView({ page, editable = true, canComment = true, hasCommente
       imageUrl: imageUrl.trim(),
       links: links.map((link) => ({ platform: link.platform, label: link.label, value: link.value })),
       ...(nextStatus ? { status: nextStatus } : {}),
+      ...(nextStatus && nextStatus !== 'APPROVED' ? { decisionNote: note ?? '' } : {}),
     };
 
     try {
@@ -528,7 +995,6 @@ export function PageView({ page, editable = true, canComment = true, hasCommente
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
-          'x-admin-password': encodeURIComponent(getAdminPassword()),
         },
         body: JSON.stringify(payload),
       });
@@ -547,7 +1013,14 @@ export function PageView({ page, editable = true, canComment = true, hasCommente
 
       if (nextStatus) {
         setStatus(nextStatus);
-        setMessage(nextStatus === 'APPROVED' ? 'صفحه منتشر شد.' : 'صفحه رد شد.');
+        setAdminNote('');
+        setMessage(
+          nextStatus === 'APPROVED'
+            ? 'صفحه منتشر شد.'
+            : nextStatus === 'REJECTED'
+              ? 'صفحه رد شد.'
+              : 'درخواست تغییر ثبت شد.'
+        );
       } else {
         setMessage('تغییرات ذخیره شد.');
       }
@@ -572,7 +1045,6 @@ export function PageView({ page, editable = true, canComment = true, hasCommente
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
-          'x-admin-password': encodeURIComponent(getAdminPassword()),
         },
         body: JSON.stringify(changes),
       });
@@ -608,6 +1080,35 @@ export function PageView({ page, editable = true, canComment = true, hasCommente
     }
   }
 
+  /** Admin permanently deletes a comment (server-enforced, audit-logged). */
+  async function deleteComment(id: string) {
+    clearFeedback();
+
+    try {
+      const response = await fetch(`/api/admin/comments/${id}`, {
+        method: 'DELETE',
+      });
+
+      const payload = await response.json().catch(() => null);
+
+      if (response.status === 401) {
+        setError('رمز مدیریت معتبر نیست.');
+        return;
+      }
+
+      if (!response.ok) {
+        setError(payload?.error ?? 'حذف نظر ممکن نشد.');
+        return;
+      }
+
+      setComments((prev) => prev.filter((comment) => comment.id !== id));
+      setEditingCommentId(null);
+      setMessage('نظر حذف شد.');
+    } catch {
+      setError('حذف نظر ممکن نشد.');
+    }
+  }
+
   async function approveType(suggestionId: string) {
     clearFeedback();
 
@@ -616,7 +1117,6 @@ export function PageView({ page, editable = true, canComment = true, hasCommente
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
-          'x-admin-password': encodeURIComponent(getAdminPassword()),
         },
         body: JSON.stringify({ status: 'APPROVED' }),
       });
@@ -712,7 +1212,15 @@ export function PageView({ page, editable = true, canComment = true, hasCommente
   };
 
   const statusLabel =
-    status === 'APPROVED' ? 'منتشر شده' : status === 'REJECTED' ? 'رد شده' : 'در انتظار بررسی';
+    status === 'APPROVED'
+      ? 'منتشر شده'
+      : status === 'REJECTED'
+        ? 'رد شده'
+        : status === 'CHANGES_REQUESTED'
+          ? 'نیاز به اصلاح'
+          : status === 'DRAFT'
+            ? 'پیش‌نویس'
+            : 'در انتظار بررسی';
 
   const resetIdentity = () => {
     setIdentityOpen(false);
@@ -764,11 +1272,38 @@ export function PageView({ page, editable = true, canComment = true, hasCommente
                 ? 'bg-emerald-600/10 text-emerald-700'
                 : status === 'REJECTED'
                   ? 'bg-red-600/10 text-red-700'
-                  : 'bg-saffron-500/10 text-saffron-700'
+                  : status === 'CHANGES_REQUESTED'
+                    ? 'bg-saffron-500/10 text-saffron-700'
+                    : status === 'DRAFT'
+                      ? 'bg-ink-900/10 text-ink-600'
+                      : 'bg-saffron-500/10 text-saffron-700'
             }`}
           >
             {statusLabel}
           </span>
+        </div>
+      )}
+
+      {/* The admin's decision note shown to the creator of a CHANGES_REQUESTED
+          or REJECTED page so they know what to correct. */}
+      {!admin && decisionNote && (status === 'CHANGES_REQUESTED' || status === 'REJECTED') && (
+        <div
+          className={`rounded-3xl p-4 ring-1 ${
+            status === 'REJECTED'
+              ? 'bg-red-50 ring-red-200/60'
+              : 'bg-saffron-50 ring-saffron-200/60'
+          }`}
+        >
+          <p
+            className={`text-[13px] font-bold ${
+              status === 'REJECTED' ? 'text-red-700' : 'text-saffron-700'
+            }`}
+          >
+            {status === 'REJECTED' ? 'دلیل رد از طرف مدیر:' : 'پیام مدیر:'}
+          </p>
+          <p className="mt-1 text-sm leading-7 text-ink-800 whitespace-pre-line">
+            {decisionNote}
+          </p>
         </div>
       )}
 
@@ -783,6 +1318,21 @@ export function PageView({ page, editable = true, canComment = true, hasCommente
           {error}
         </div>
       )}
+
+      {/* Ownership request status cards (already-requested / owner states) —
+          rendered inline. The request FORM opens in the modal overlay below,
+          matching the suggestion modal presentation. */}
+      {(viewerIsOwner || myOwnershipRequest) &&
+        page.status === 'APPROVED' &&
+        !admin &&
+        !ownershipOpen && (
+          <OwnershipRequestPanel
+            topicId={page.id}
+            canRequest={canRequestOwnership}
+            isOwner={viewerIsOwner}
+            request={myOwnershipRequest}
+          />
+        )}
 
       {/* ————————————————— TOPIC INFORMATION — ONE unified card ————————————————— */}
       <article className="overflow-hidden rounded-[28px] bg-white ring-1 ring-ink-900/[0.06] shadow-[0_10px_30px_-14px_rgba(21,67,63,0.3)]">
@@ -874,7 +1424,105 @@ export function PageView({ page, editable = true, canComment = true, hasCommente
               </div>
             </div>
           )}
+
+          {/* Public aggregate rating — top-left of the page image (APPROVED
+              pages). The average (stars + decimal) is READ-ONLY informational
+              metadata, never a button. The «۲ نظر» button scrolls to the
+              comments section; «۳ پرسش» is a visual placeholder for now. */}
+          {page.status === 'APPROVED' && (
+            <div className="absolute top-3 left-4 flex items-center gap-1.5 rounded-full bg-black/55 py-1.5 pe-1.5 ps-3 text-white ring-1 ring-white/20 backdrop-blur">
+              {averageRatingState !== null && ratingCountState > 0 ? (
+                <>
+                  <span className="flex items-center gap-1.5">
+                    <StarRow value={averageRatingState} className="text-[12px] leading-none" />
+                    <span className="text-[12px] font-bold leading-none">
+                      {toPersianDecimal(averageRatingState)}
+                    </span>
+                  </span>
+                  <span aria-hidden className="h-3.5 w-px bg-white/25" />
+                  <button
+                    type="button"
+                    onClick={() =>
+                      document.getElementById('page-comments')?.scrollIntoView({ behavior: 'smooth' })
+                    }
+                    aria-label="مشاهده نظرات"
+                    className="rounded-full bg-white/90 px-2.5 py-1 text-[11px] font-bold leading-none text-ink-900 transition-colors hover:bg-white"
+                  >
+                    {toPersianDigits(ratingCountState)} نظر
+                  </button>
+                  <button
+                    type="button"
+                    aria-disabled="true"
+                    title="پرسش‌ها به‌زودی"
+                    className="rounded-full bg-white/90 px-2.5 py-1 text-[11px] font-bold leading-none text-ink-900"
+                  >
+                    {toPersianDigits(3)} پرسش
+                  </button>
+                </>
+              ) : (
+                <span className="text-[11px] font-medium leading-none text-white/80">
+                  هنوز امتیازی ثبت نشده
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* «ثبت نظر» — bottom-center of the page image (APPROVED pages). A
+              native-looking glass action that belongs to the image: same dark
+              translucent language as the aggregate pill, with a comment icon.
+              The personal star rating selector lives inside the composer. */}
+          {page.status === 'APPROVED' && (
+            <button
+              type="button"
+              onClick={handleCommentClick}
+              className="absolute bottom-3 left-1/2 inline-flex -translate-x-1/2 items-center gap-2 rounded-full bg-black/55 px-5 py-2.5 text-[13px] font-bold text-white ring-1 ring-white/25 backdrop-blur-md shadow-[0_10px_28px_-10px_rgba(0,0,0,0.65)] transition-colors hover:bg-black/70"
+            >
+              <BubbleIcon strokeWidth={2} className="size-4 shrink-0" />
+              ثبت نظر
+            </button>
+          )}
         </div>
+
+        {/* Compact public action bar — immediately below the hero image,
+            between the image and the introductory content. Visible to every
+            viewer on APPROVED pages. Anonymous/unverified users are asked for
+            quick verification only when they actually click an action. */}
+        {page.status === 'APPROVED' && !admin && (
+          <div className="flex flex-wrap items-center justify-center gap-1 border-t border-ink-900/[0.06] px-3 py-2.5 md:px-5">
+            <button
+              type="button"
+              onClick={() => (canFavorite ? void handleToggleFavorite() : requireVerify('favorite'))}
+              className="inline-flex items-center gap-1 rounded-full bg-white px-1.5 py-1.5 text-[10px] font-semibold text-turquoise-700 ring-1 ring-turquoise-200/70 transition-colors hover:bg-turquoise-50"
+            >
+              <HeartIcon
+                strokeWidth={2.2}
+                className={`size-3 shrink-0 ${isFavoritedState ? 'text-rose-500' : ''}`}
+                fill={isFavoritedState ? 'currentColor' : 'none'}
+              />
+              {isFavoritedState ? 'در علاقه‌مندی‌ها' : 'افزودن به علاقه‌مندی‌ها'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => (canSuggest ? setSuggestOpen(true) : requireVerify('suggestion'))}
+              className="inline-flex items-center gap-1 rounded-full bg-white px-1.5 py-1.5 text-[10px] font-semibold text-turquoise-700 ring-1 ring-turquoise-200/70 transition-colors hover:bg-turquoise-50"
+            >
+              <PenIcon strokeWidth={2.2} className="size-3 shrink-0" />
+              ویرایش صفحه
+            </button>
+
+            {!viewerIsOwner && (
+              <button
+                type="button"
+                onClick={() => (canRequestOwnership ? setOwnershipOpen(true) : requireVerify('ownership'))}
+                className="inline-flex items-center gap-1 rounded-full bg-white px-1.5 py-1.5 text-[10px] font-semibold text-turquoise-700 ring-1 ring-turquoise-200/70 transition-colors hover:bg-turquoise-50"
+              >
+                <UserIcon strokeWidth={2.2} className="size-3 shrink-0" />
+                درخواست مالکیت
+              </button>
+            )}
+          </div>
+        )}
 
         {(editable && imageOpen) || admin ? (
           <div className="border-t border-ink-900/[0.06] p-4 md:p-5">
@@ -892,7 +1540,7 @@ export function PageView({ page, editable = true, canComment = true, hasCommente
               </InlineEditor>
             )}
 
-            {admin && (
+            {(editable || admin) && (
               <>
                 {!identityOpen ? (
                   <div className="flex items-center justify-between gap-3">
@@ -933,7 +1581,7 @@ export function PageView({ page, editable = true, canComment = true, hasCommente
                     <div className="flex gap-2">
                       <button
                         type="button"
-                        onClick={() => void saveAdmin()}
+                        onClick={() => void (admin ? saveAdmin() : saveIdentity())}
                         disabled={saving}
                         className="rounded-full bg-turquoise-600 px-5 py-2 text-[13px] font-bold text-white transition-colors hover:bg-turquoise-700 disabled:opacity-50"
                       >
@@ -949,7 +1597,7 @@ export function PageView({ page, editable = true, canComment = true, hasCommente
                       </button>
                     </div>
 
-                    {pendingTypes.length > 0 && (
+                    {admin && pendingTypes.length > 0 && (
                       <div className="rounded-2xl bg-saffron-50 p-4 ring-1 ring-saffron-200/60">
                         <p className="text-[13px] font-bold text-ink-800">
                           این نوع‌ها جدید هستند و در انتظار بررسی‌اند:
@@ -977,35 +1625,65 @@ export function PageView({ page, editable = true, canComment = true, hasCommente
                   </div>
                 )}
 
-                <div className="mt-3 space-y-2">
-                  <button
-                    type="button"
-                    onClick={() => void saveAdmin()}
-                    disabled={saving}
-                    className="w-full rounded-full bg-white px-7 py-3 text-[15px] font-bold text-ink-900 ring-1 ring-ink-900/15 transition-all duration-200 hover:ring-turquoise-600/50 hover:text-turquoise-700 disabled:opacity-50"
-                  >
-                    {saving ? 'در حال ذخیره...' : 'ذخیره تغییرات'}
-                  </button>
+                {admin && (
+                  <>
+                    <div className="mt-3 space-y-2">
+                      <button
+                        type="button"
+                        onClick={() => void saveAdmin()}
+                        disabled={saving}
+                        className="w-full rounded-full bg-white px-7 py-3 text-[15px] font-bold text-ink-900 ring-1 ring-ink-900/15 transition-all duration-200 hover:ring-turquoise-600/50 hover:text-turquoise-700 disabled:opacity-50"
+                      >
+                        {saving ? 'در حال ذخیره...' : 'ذخیره تغییرات'}
+                      </button>
 
-                  <button
-                    type="button"
-                    onClick={() => void saveAdmin('APPROVED')}
-                    disabled={saving}
-                    className="flex w-full items-center justify-center gap-2 rounded-full bg-turquoise-600 px-7 py-3 text-[15px] font-bold text-white shadow-[0_10px_24px_-10px_rgba(26,99,93,0.55)] transition-all duration-200 hover:bg-turquoise-700 disabled:opacity-50"
-                  >
-                    <CheckIcon strokeWidth={2.6} className="size-5" />
-                    انتشار صفحه
-                  </button>
+                      <button
+                        type="button"
+                        onClick={() => void saveAdmin('APPROVED')}
+                        disabled={saving}
+                        className="flex w-full items-center justify-center gap-2 rounded-full bg-turquoise-600 px-7 py-3 text-[15px] font-bold text-white shadow-[0_10px_24px_-10px_rgba(26,99,93,0.55)] transition-all duration-200 hover:bg-turquoise-700 disabled:opacity-50"
+                      >
+                        <CheckIcon strokeWidth={2.6} className="size-5" />
+                        انتشار صفحه
+                      </button>
+                    </div>
 
-                  <button
-                    type="button"
-                    onClick={() => void saveAdmin('REJECTED')}
-                    disabled={saving}
-                    className="w-full rounded-full bg-white px-7 py-3 text-[15px] font-bold text-red-700 ring-1 ring-red-200 transition-all duration-200 hover:bg-red-50 disabled:opacity-50"
-                  >
-                    رد صفحه
-                  </button>
-                </div>
+                    <div className="mt-3 rounded-2xl bg-ink-900/[0.02] p-4 ring-1 ring-ink-900/[0.06]">
+                      <label className="block">
+                        <span className="mb-2 block text-[13px] font-bold text-ink-900">
+                          پیام / دلیل (برای «درخواست تغییر» یا «رد صفحه»)
+                        </span>
+                        <textarea
+                          value={adminNote}
+                          onChange={(event) => setAdminNote(event.target.value)}
+                          rows={3}
+                          placeholder="مثلاً: لطفاً شهر این مکان را مشخص کنید."
+                          className={`${inputClass} resize-none leading-7`}
+                        />
+                      </label>
+
+                      <div className="mt-2 space-y-2">
+                        <button
+                          type="button"
+                          onClick={() => void saveAdmin('CHANGES_REQUESTED', adminNote)}
+                          disabled={saving}
+                          className="w-full rounded-full bg-white px-7 py-3 text-[15px] font-bold text-saffron-700 ring-1 ring-saffron-300 transition-all duration-200 hover:bg-saffron-50 disabled:opacity-50"
+                        >
+                          درخواست تغییر
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => void saveAdmin('REJECTED', adminNote)}
+                          disabled={saving}
+                          className="w-full rounded-full bg-white px-7 py-3 text-[15px] font-bold text-red-700 ring-1 ring-red-200 transition-all duration-200 hover:bg-red-50 disabled:opacity-50"
+                        >
+                          رد صفحه
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
               </>
             )}
           </div>
@@ -1013,75 +1691,73 @@ export function PageView({ page, editable = true, canComment = true, hasCommente
         {/* ————————————————— INTRODUCTION ————————————————— */}
         <section
           id="page-intro"
-          className="scroll-mt-20 border-t border-ink-900/[0.06] px-4 py-4 md:px-5"
+          className="scroll-mt-20 border-t border-ink-900/[0.06] px-4 py-2 md:px-5"
         >
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-[12px] font-bold text-ink-500">معرفی</span>
-          </div>
-
-          <div className="mt-3 border-t border-ink-900/[0.06] pt-3">
-            {description ? (
-              editable && introOpen ? (
-                <InlineEditor onSave={() => void saveIntro()} onCancel={() => setIntroOpen(false)} saving={saving}>
-                  <textarea
-                    value={description}
-                    onChange={(event) => setDescription(event.target.value)}
-                    rows={12}
-                    maxLength={2000}
-                    className={`${inputClass} resize-y leading-7`}
-                  />
-                </InlineEditor>
-              ) : (
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <p
-                      ref={introRef}
-                      className={`${introExpanded ? '' : 'line-clamp-3'} whitespace-pre-line break-words text-[14px] leading-7 text-ink-700`}
-                    >
-                      {description}
-                    </p>
-                    {introCanExpand && (
-                      <button
-                        type="button"
-                        onClick={() => setIntroExpanded((open) => !open)}
-                        className="mt-1 text-[12px] font-semibold text-turquoise-700 transition-colors hover:text-turquoise-800"
-                      >
-                        {introExpanded ? 'کمتر' : 'بیشتر'}
-                      </button>
-                    )}
-                  </div>
-                  {editable && <EditButton label="ویرایش معرفی" onClick={() => setIntroOpen(true)} />}
-                </div>
-              )
-            ) : editable ? (
-              introOpen ? (
-                <InlineEditor onSave={() => void saveIntro()} onCancel={() => setIntroOpen(false)} saving={saving}>
-                  <textarea
-                    value={description}
-                    onChange={(event) => setDescription(event.target.value)}
-                    rows={12}
-                    maxLength={2000}
-                    placeholder="درباره این صفحه بنویسید..."
-                    className={`${inputClass} resize-y leading-7`}
-                  />
-                </InlineEditor>
-              ) : (
-                <CompactInvite label="افزودن معرفی" onClick={() => setIntroOpen(true)} />
-              )
+          {description ? (
+            editable && introOpen ? (
+              <InlineEditor onSave={() => void saveIntro()} onCancel={() => setIntroOpen(false)} saving={saving}>
+                <textarea
+                  value={description}
+                  onChange={(event) => setDescription(event.target.value)}
+                  rows={12}
+                  maxLength={2000}
+                  className={`${inputClass} resize-y leading-7`}
+                />
+              </InlineEditor>
             ) : (
-              <p className="text-[14px] text-ink-400">معرفی‌ای ثبت نشده است.</p>
-            )}
-          </div>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <p
+                    ref={introRef}
+                    className={`${introExpanded ? '' : 'line-clamp-3'} whitespace-pre-line break-words text-[14px] leading-7 text-ink-700`}
+                  >
+                    {description}
+                  </p>
+                  {introCanExpand && (
+                    <button
+                      type="button"
+                      onClick={() => setIntroExpanded((open) => !open)}
+                      className="mt-1 text-[12px] font-semibold text-turquoise-700 transition-colors hover:text-turquoise-800"
+                    >
+                      {introExpanded ? 'کمتر' : 'بیشتر'}
+                    </button>
+                  )}
+                </div>
+                {editable && <EditButton label="ویرایش معرفی" onClick={() => setIntroOpen(true)} />}
+              </div>
+            )
+          ) : editable ? (
+            introOpen ? (
+              <InlineEditor onSave={() => void saveIntro()} onCancel={() => setIntroOpen(false)} saving={saving}>
+                <textarea
+                  value={description}
+                  onChange={(event) => setDescription(event.target.value)}
+                  rows={12}
+                  maxLength={2000}
+                  placeholder="درباره این صفحه بنویسید..."
+                  className={`${inputClass} resize-y leading-7`}
+                />
+              </InlineEditor>
+            ) : (
+              <CompactInvite label="افزودن معرفی" onClick={() => setIntroOpen(true)} />
+            )
+          ) : (
+            <p className="text-[14px] text-ink-400">معرفی‌ای ثبت نشده است.</p>
+          )}
         </section>
 
         {/* ————————————————— AREA / HOURS / ADDRESS / CONTACTS ————————————————— */}
-        <section id="page-info" className="scroll-mt-20 border-t border-ink-900/[0.06] px-4 py-4 md:px-5">
+        {/* pt-0: the first info row's own py-2 provides the top spacing, so the
+            section border sits like a divider between rows — otherwise the
+            section padding would stack with the row padding and the
+            introduction→service-area gap would grow beyond the row rhythm. */}
+        <section id="page-info" className="scroll-mt-20 border-t border-ink-900/[0.06] px-4 pb-2 pt-0 md:px-5">
         <dl className="divide-y divide-ink-900/[0.06]">
           <InfoRow
             label="محدوده خدمات‌دهی"
             value={serviceAreaLabel}
-            edit={admin}
-            onEdit={admin ? () => setIdentityOpen(true) : undefined}
+            edit={editable || admin}
+            onEdit={editable || admin ? () => setIdentityOpen(true) : undefined}
           />
 
           <div>
@@ -1226,141 +1902,83 @@ export function PageView({ page, editable = true, canComment = true, hasCommente
           <span className="text-[12px] font-bold text-ink-500">نظرات</span>
           {comments.length > 0 && (
             <span className="text-[12px] font-medium text-ink-400">
-              {persianNumber(comments.length)} نظر
+              {toPersianDigits(comments.length)} نظر
             </span>
           )}
         </div>
 
+        {/* «ثبت نظر» — immediately ABOVE the comments list so the action is
+            always accessible without scrolling through existing comments.
+            Same dark neutral language as the hero «ثبت نظر» (icon + pill);
+            the mandatory star rating lives inside the comment composer.
+            Visible to all visitors. */}
+        <button
+          type="button"
+          onClick={handleCommentClick}
+          className="mb-3 inline-flex w-full items-center justify-center gap-2 rounded-full bg-ink-900 px-6 py-2.5 text-[13px] font-bold text-white shadow-[0_8px_20px_-8px_rgba(0,0,0,0.35)] transition-colors hover:bg-ink-800"
+        >
+          <BubbleIcon strokeWidth={2} className="size-4 shrink-0" />
+          ثبت نظر
+        </button>
+
         {comments.length > 0 && (
-          <div className="mt-2 divide-y divide-ink-900/[0.06]">
-            {comments.map((comment) => {
-              const isPending = comment.status === 'PENDING';
-              const isEditing = editingCommentId === comment.id;
+          <div className="space-y-3">
+            {commentGroups.map((group) => (
+              <div
+                key={group.key}
+                className="overflow-hidden rounded-2xl bg-ink-900/[0.02] ring-1 ring-ink-900/[0.06]"
+              >
+                {/* Group header — one review frame per author. */}
+                <div className="flex items-center gap-2 border-b border-ink-900/[0.06] bg-white/70 px-3 py-2.5">
+                  <span className="grid size-8 shrink-0 place-items-center rounded-full bg-turquoise-600/10 text-[12px] font-bold text-turquoise-700">
+                    {commentAuthorName(group.comments[0]).charAt(0)}
+                  </span>
+                  <span className="min-w-0 truncate text-[13px] font-bold text-ink-900">
+                    {commentAuthorName(group.comments[0])}
+                  </span>
+                  {group.isOwner && (
+                    <span className="shrink-0 rounded-full bg-turquoise-600/10 px-2.5 py-0.5 text-[10px] font-bold text-turquoise-700">
+                      مالک صفحه
+                    </span>
+                  )}
+                </div>
 
-              return (
-                <article
-                  key={comment.id}
-                  className={`py-3 ${isPending ? 'border-s-4 border-red-400 ps-3' : ''}`}
-                >
-                  {admin && isEditing ? (
-                    <div>
-                      <textarea
-                        value={commentEditBody}
-                        onChange={(event) => setCommentEditBody(event.target.value)}
-                        rows={3}
-                        className={`${inputClass} resize-none`}
-                      />
-                      <div className="mt-2 flex gap-2">
-                        <button
-                          type="button"
-                          onClick={() => void moderateComment(comment.id, { body: commentEditBody.trim() })}
-                          className="rounded-full bg-turquoise-600 px-5 py-2 text-xs font-bold text-white transition-colors hover:bg-turquoise-700"
-                        >
-                          ذخیره
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setEditingCommentId(null);
-                            setCommentEditBody('');
-                          }}
-                          className="rounded-full bg-white px-5 py-2 text-xs font-bold text-ink-600 ring-1 ring-ink-900/15 transition-colors hover:bg-ink-900/5"
-                        >
-                          انصراف
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <>
-                      <p className="whitespace-pre-line break-words text-[14px] leading-7 text-ink-800">
-                        {comment.body}
-                      </p>
+                <div className="divide-y divide-ink-900/[0.06] px-3">
+                  {group.comments.map((comment) => {
+                    const replies = comments.filter((reply) => reply.parentId === comment.id);
 
-                      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5">
-                        {comment.createdAt && (
-                          <span className="text-[11px] text-ink-400">
-                            {formatCommentDate(comment.createdAt)}
-                          </span>
-                        )}
-                        {comment.status === 'PENDING' && (
-                          <span className="rounded-full bg-red-600/10 px-2.5 py-0.5 text-[12px] font-bold text-red-700">
-                            در انتظار بررسی
-                          </span>
-                        )}
-                        {comment.status === 'APPROVED' && (
-                          <span className="rounded-full bg-emerald-600/10 px-2.5 py-0.5 text-[12px] font-bold text-emerald-700">
-                            تأییدشده
-                          </span>
-                        )}
-                        {comment.status === 'REJECTED' && (
-                          <span className="rounded-full bg-ink-900/5 px-2.5 py-0.5 text-[12px] font-bold text-ink-500">
-                            رد شده
-                          </span>
-                        )}
+                    return (
+                      <div key={comment.id}>
+                        {renderCommentCard(comment, false)}
 
-                        {admin && (
-                          <div className="ms-auto flex gap-2">
-                            {comment.status !== 'APPROVED' && (
-                              <button
-                                type="button"
-                                onClick={() => void moderateComment(comment.id, { status: 'APPROVED' })}
-                                className="rounded-full bg-turquoise-600 px-4 py-1.5 text-xs font-bold text-white transition-colors hover:bg-turquoise-700"
-                              >
-                                تأیید
-                              </button>
-                            )}
-                            {comment.status !== 'REJECTED' && (
-                              <button
-                                type="button"
-                                onClick={() => void moderateComment(comment.id, { status: 'REJECTED' })}
-                                className="rounded-full bg-white px-4 py-1.5 text-xs font-bold text-red-700 ring-1 ring-red-200 transition-colors hover:bg-red-50"
-                              >
-                                رد
-                              </button>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditingCommentId(comment.id);
-                                setCommentEditBody(comment.body);
-                              }}
-                              className="grid size-8 place-items-center rounded-full bg-ink-900/5 text-ink-600 transition-colors hover:bg-ink-900/10"
-                              aria-label="ویرایش نظر"
-                            >
-                              <PenIcon strokeWidth={2.2} className="size-3.5" />
-                            </button>
+                        {replies.length > 0 && (
+                          <div className="mb-2 space-y-1 border-s-2 border-ink-900/10 ps-3">
+                            {replies.map((reply) => (
+                              <div key={reply.id}>{renderCommentCard(reply, true)}</div>
+                            ))}
                           </div>
                         )}
                       </div>
-                    </>
-                  )}
-                </article>
-              );
-            })}
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </div>
         )}
 
-        {canComment && !commentSubmitted ? (
-          <div className="mt-2">
-            <CommentForm topicId={page.id} onSubmitted={handleCommentSubmitted} />
-          </div>
-        ) : hasCommented || commentSubmitted ? (
-          <div className="mt-3 rounded-xl border border-dashed border-ink-900/20 bg-white/50 px-4 py-3 text-center">
-            <p className="text-[13px] leading-6 text-ink-600">
-              شما قبلاً نظر خود را برای این صفحه ثبت کرده‌اید.
-            </p>
-          </div>
-        ) : (
-          <div className="mt-3 rounded-xl border border-dashed border-ink-900/20 bg-white/50 px-4 py-3 text-center">
-            <p className="text-[13px] leading-6 text-ink-600">
-              برای ثبت نظر باید{' '}
-              <Link href="/login" className="font-bold text-turquoise-700 underline-offset-4 hover:underline">
-                وارد حساب کاربری
-              </Link>{' '}
-              شوید.
-            </p>
-          </div>
-        )}
+        {/* Comment composer overlay — opens from the hero «ثبت نظر» and the
+            bottom «ثبت نظر»; never scrolls the user through existing comments. */}
+        <CommentComposer
+          open={commentComposerOpen}
+          onClose={() => setCommentComposerOpen(false)}
+          topicId={page.id}
+          requireRating={page.status === 'APPROVED'}
+          rating={commentRating}
+          onRatingChange={setCommentRating}
+          focusNonce={focusCommentNonce}
+          onSubmitted={handleCommentSubmitted}
+        />
       </section>
 
       {/* ————————————————— FINAL SUBMISSION ————————————————— */}
@@ -1371,7 +1989,7 @@ export function PageView({ page, editable = true, canComment = true, hasCommente
             onClick={() => setConfirmOpen(true)}
             className="flex w-full items-center justify-center gap-2 rounded-full bg-turquoise-600 px-7 py-3.5 text-[15px] font-bold text-white shadow-[0_10px_24px_-10px_rgba(26,99,93,0.55)] transition-all duration-200 hover:-translate-y-0.5 hover:bg-turquoise-700 active:translate-y-0 active:scale-[0.97]"
           >
-            بررسی و ارسال اطلاعات
+            بررسی و ارسال برای بررسی
           </button>
         </div>
       )}
@@ -1410,6 +2028,62 @@ export function PageView({ page, editable = true, canComment = true, hasCommente
                 {submitting ? 'در حال ارسال...' : 'تأیید و ارسال'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ————————————————— SUGGESTION MODAL ————————————————— */}
+      {suggestOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-900/40 p-4">
+          <div className="max-h-[88vh] w-full max-w-lg overflow-y-auto rounded-3xl bg-white p-5 shadow-2xl">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h3 className="font-display text-lg text-ink-900">پیشنهاد تغییر</h3>
+              <button
+                type="button"
+                onClick={() => setSuggestOpen(false)}
+                aria-label="بستن"
+                className="grid size-8 place-items-center rounded-full bg-ink-900/5 text-ink-600 transition-colors hover:bg-ink-900/10"
+              >
+                <XIcon strokeWidth={2.4} className="size-4" />
+              </button>
+            </div>
+
+            <SuggestionPanel topicId={page.id} page={page} />
+          </div>
+        </div>
+      )}
+
+      {/* ————————————————— OWNERSHIP REQUEST MODAL —————————————————
+          Same presentation as the suggestion modal: overlay over the page,
+          same backdrop, positioning, close and responsive behavior. */}
+      {ownershipOpen && page.status === 'APPROVED' && !admin && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-ink-900/40 p-4"
+          onClick={() => setOwnershipOpen(false)}
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            className="max-h-[88vh] w-full max-w-lg overflow-y-auto rounded-3xl bg-white p-5 shadow-2xl"
+          >
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h3 className="font-display text-lg text-ink-900">درخواست مالکیت</h3>
+              <button
+                type="button"
+                onClick={() => setOwnershipOpen(false)}
+                aria-label="بستن"
+                className="grid size-8 place-items-center rounded-full bg-ink-900/5 text-ink-600 transition-colors hover:bg-ink-900/10"
+              >
+                <XIcon strokeWidth={2.4} className="size-4" />
+              </button>
+            </div>
+
+            <OwnershipRequestPanel
+              topicId={page.id}
+              canRequest={canRequestOwnership}
+              isOwner={viewerIsOwner}
+              request={myOwnershipRequest}
+              autoOpenForm
+            />
           </div>
         </div>
       )}

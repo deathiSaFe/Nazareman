@@ -4,14 +4,18 @@ import React, { useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { PublicUser } from '@/lib/auth';
+import { toPersianDigits } from '@/lib/persian-digits';
 
 interface MobileMenuProps {
   isOpen: boolean;
   onClose: () => void;
   user: PublicUser | null;
+  /** Server-computed unread inbox count — shown as a badge next to
+   *  «صندوق پیام‌ها» when there are unread messages. */
+  unreadCount?: number;
 }
 
-export default function MobileMenu({ isOpen, onClose, user }: MobileMenuProps) {
+export default function MobileMenu({ isOpen, onClose, user, unreadCount = 0 }: MobileMenuProps) {
   const router = useRouter();
 
   useEffect(() => {
@@ -46,11 +50,9 @@ export default function MobileMenu({ isOpen, onClose, user }: MobileMenuProps) {
     ...(user
       ? [{ label: 'پروفایل من', href: '/profile', icon: '👤' }]
       : [{ label: 'ورود / ثبت‌نام', href: '/login', icon: '🔑' }]),
-    { label: 'موضوعات من', href: '/my-topics', icon: '📝' },
-    { label: 'درباره ما', href: '/about', icon: 'ℹ️' },
-    { label: 'تماس', href: '/contact', icon: '📧' },
-    { label: 'تنظیمات', href: '/settings', icon: '⚙️' },
-    { label: 'حریم خصوصی', href: '/privacy', icon: '🔒' },
+    { label: 'صفحه‌های من', href: '/my-topics', icon: '📝' },
+    { label: 'علاقه‌مندی‌ها', href: '/favorites', icon: '❤️' },
+    ...(user ? [{ label: 'صندوق پیام‌ها', href: '/inbox', icon: '✉️' }] : []),
   ];
 
   return (
@@ -135,6 +137,12 @@ export default function MobileMenu({ isOpen, onClose, user }: MobileMenuProps) {
                     <span className="text-base font-medium text-gray-900">
                       {item.label}
                     </span>
+                    {/* Unread inbox badge — only for the signed-in inbox entry. */}
+                    {item.href === '/inbox' && unreadCount > 0 && (
+                      <span className="ms-auto grid min-w-6 place-items-center rounded-full bg-red-500 px-1.5 py-0.5 text-[11px] font-bold text-white">
+                        {toPersianDigits(unreadCount)}
+                      </span>
+                    )}
                   </Link>
                 </li>
               ))}

@@ -6,21 +6,33 @@ import { useRouter } from 'next/navigation';
 const inputClass =
   'w-full rounded-2xl bg-white px-4 py-3 text-[15px] font-medium text-ink-900 outline-none ring-1 ring-ink-900/10 transition-all duration-200 placeholder:font-normal placeholder:text-ink-900/30 focus:ring-2 focus:ring-turquoise-600/70';
 
+type Step = 'phone' | 'code' | 'setup';
+
 /**
- * Phone sign-in / register. Development mode shows the stub code returned by
- * /api/auth/request-code so the flow is testable without an SMS provider.
- * After a successful verification the user is sent back to `next` (the page
- * they came from, e.g. /add-topic) instead of the profile.
+ * Phone sign-in / register. One shared lightweight verification flow used
+ * everywhere (login page, hamburger, add-topic, comment/rating/favorite/
+ * suggestion/ownership intents). After verification the user is returned to
+ * `next` (the page they came from, including the intended action).
+ *
+ * Brand-new users see a minimal one-time setup step: an optional display name
+ * (a default avatar is applied automatically — no image URL required). Existing
+ * users go straight back to `next`.
  */
 export function LoginForm({ next }: { next?: string | null }) {
   const router = useRouter();
 
   const [phoneNumber, setPhoneNumber] = useState('');
   const [code, setCode] = useState('');
-  const [step, setStep] = useState<'phone' | 'code'>('phone');
+  const [displayName, setDisplayName] = useState('');
+  const [step, setStep] = useState<Step>('phone');
   const [devCode, setDevCode] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  function continueTo(nextPath: string | null | undefined) {
+    router.push(nextPath || '/profile');
+    router.refresh();
+  }
 
   async function handleRequestCode(event: FormEvent) {
     event.preventDefault();
@@ -79,8 +91,14 @@ export function LoginForm({ next }: { next?: string | null }) {
         return;
       }
 
-      router.push(next || '/profile');
-      router.refresh();
+      // First-time users get a minimal setup step (display name, default
+      // avatar) — existing users go straight to their destination.
+      if (data?.isNewUser) {
+        setStep('setup');
+        return;
+      }
+
+      continueTo(next);
     } catch {
       setError('ورود ممکن نشد.');
     } finally {
@@ -88,18 +106,58 @@ export function LoginForm({ next }: { next?: string | null }) {
     }
   }
 
+  async function handleSetup(event: FormEvent) {
+    event.preventDefault();
+    setError(null);
+    setLoading(true);
+
+    try {
+      const name = displayName.trim();
+      if (name) {
+        const response = await fetch('/api/profile', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ displayName: name }),
+        });
+
+        if (!response.ok) {
+          const payload = await response.json().catch(() => null);
+          setError(payload?.error ?? 'ذخیره نام ممکن نشد.');
+          setLoading(false);
+          return;
+        }
+      }
+
+      // Avatar is a default (initial-letter) automatically — no URL required.
+      continueTo(next);
+    } catch {
+      setError('ذخیره نام ممکن نشد.');
+      setLoading(false);
+    }
+  }
+
+  function skipSetup() {
+    continueTo(next);
+  }
+
   return (
     <form
-      onSubmit={step === 'phone' ? handleRequestCode : handleVerify}
+      onSubmit={
+        step === 'phone' ? handleRequestCode : step === 'code' ? handleVerify : handleSetup
+      }
       className="rounded-3xl bg-white p-6 ring-1 ring-ink-900/[0.06] shadow-[0_10px_30px_-14px_rgba(21,67,63,0.3)] md:p-8"
       noValidate
     >
-      <h1 className="font-display text-2xl text-ink-900">ورود / ثبت‌نام</h1>
+      <h1 className="font-display text-2xl text-ink-900">
+        {step === 'setup' ? 'سلام! 👋' : 'ورود / ثبت‌نام'}
+      </h1>
 
       <p className="mt-2 text-sm leading-6 text-ink-600">
         {step === 'phone'
           ? 'شماره موبایل خود را وارد کنید تا کد تأیید دریافت کنید.'
-          : `کد تأیید ارسال‌شده به ${phoneNumber} را وارد کنید.`}
+          : step === 'code'
+            ? `کد تأیید ارسال‌شده به ${phoneNumber} را وارد کنید.`
+            : 'یک نام برای نمایش در نظرات و پروفایل انتخاب کنید (اختیاری).'}
       </p>
 
       {step === 'phone' ? (
@@ -115,7 +173,7 @@ export function LoginForm({ next }: { next?: string | null }) {
             className={inputClass}
           />
         </label>
-      ) : (
+      ) : step === 'code' ? (
         <label className="mt-6 block">
           <span className="mb-2 block text-[13px] font-bold text-ink-900">کد تأیید</span>
           {devCode && (
@@ -134,6 +192,21 @@ export function LoginForm({ next }: { next?: string | null }) {
             className={inputClass}
           />
         </label>
+      ) : (
+        <label className="mt-6 block">
+          <span className="mb-2 block text-[13px] font-bold text-ink-900">نام نمایشی</span>
+          <input
+            type="text"
+            value={displayName}
+            onChange={(event) => setDisplayName(event.target.value)}
+            placeholder="مثلاً: علی"
+            maxLength={40}
+            className={inputClass}
+          />
+          <span className="mt-2 block text-[12px] leading-6 text-ink-500">
+            تصویر پیش‌فرض به‌صورت خودکار تنظیم می‌شود؛ بعداً می‌توانید از پروفایل تغییرش دهید.
+          </span>
+        </label>
       )}
 
       {error && (
@@ -151,7 +224,9 @@ export function LoginForm({ next }: { next?: string | null }) {
           ? 'در حال پردازش...'
           : step === 'phone'
             ? 'دریافت کد'
-            : 'ورود'}
+            : step === 'code'
+              ? 'ورود'
+              : 'ادامه'}
       </button>
 
       {step === 'code' && (
@@ -165,6 +240,17 @@ export function LoginForm({ next }: { next?: string | null }) {
           className="mt-3 w-full text-center text-[13px] font-medium text-ink-500 underline underline-offset-4 transition-colors hover:text-turquoise-700"
         >
           تغییر شماره موبایل
+        </button>
+      )}
+
+      {step === 'setup' && (
+        <button
+          type="button"
+          onClick={skipSetup}
+          disabled={loading}
+          className="mt-3 w-full text-center text-[13px] font-medium text-ink-500 underline underline-offset-4 transition-colors hover:text-turquoise-700"
+        >
+          رد کردن این مرحله
         </button>
       )}
     </form>

@@ -55,7 +55,7 @@ export interface TopicForMatch {
   name: string;
   /** Ordered type labels — the primary type comes first. */
   types: string[];
-  status: 'APPROVED' | 'PENDING';
+  status: 'APPROVED' | 'DRAFT' | 'PENDING_REVIEW' | 'CHANGES_REQUESTED' | 'REJECTED';
   provinceId: string | null;
   cityId: string | null;
 }

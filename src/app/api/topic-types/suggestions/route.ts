@@ -53,9 +53,9 @@ export async function GET(request: NextRequest) {
 
 /**
  * POST /api/topic-types/suggestions
- * Record a user-entered topic type as a PENDING suggestion for admin review.
- * Existing labels keep their current status; brand-new labels start PENDING
- * and are NOT added to the canonical (approved) suggestion pool.
+ * Record a user-entered topic type as a PENDING_REVIEW suggestion for admin
+ * review. Existing labels keep their current status; brand-new labels start
+ * PENDING_REVIEW and are NOT added to the canonical (approved) pool.
  */
 export async function POST(request: NextRequest) {
   let body: unknown;
@@ -88,12 +88,12 @@ export async function POST(request: NextRequest) {
     const suggestion = await prisma.topicTypeSuggestion.upsert({
       where: { label },
       update: {},
-      create: { label, status: 'PENDING' },
+      create: { label, status: 'PENDING_REVIEW' },
       select: { id: true, label: true, status: true },
     });
 
     return NextResponse.json(suggestion, {
-      status: suggestion.status === 'PENDING' ? 201 : 200,
+      status: suggestion.status === 'PENDING_REVIEW' ? 201 : 200,
     });
   } catch (error) {
     console.error('Failed to save topic type suggestion:', error);

@@ -8,7 +8,7 @@ interface OnboardingPopupProps {
 }
 
 /**
- * One-time informational nudge shown to the creator of a newly-created PENDING
+ * One-time informational nudge shown to the creator of a newly-created DRAFT
  * page. It encourages completing the page information and leaving the first
  * comment — it is NOT a step-by-step tour, and it never blocks the editing
  * controls permanently (it can be dismissed with the close button).

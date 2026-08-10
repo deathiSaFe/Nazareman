@@ -1,10 +1,7 @@
 import Link from 'next/link';
+import { prisma } from '@/lib/prisma';
+import { getAdmin } from '@/lib/authorization';
 import { AdminLoginForm } from '@/components/admin/AdminLoginForm';
-import {
-  getAdminPassword,
-  validateAdminPassword,
-  getAdminPasswordFromCookie,
-} from '@/lib/admin-auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,14 +10,11 @@ export const metadata = {
 };
 
 export default async function AdminPage() {
-  if (!getAdminPassword()) {
-    return <AdminLoginForm notConfigured />;
-  }
+  const admin = await getAdmin();
 
-  const adminPassword = await getAdminPasswordFromCookie();
-
-  if (!validateAdminPassword(adminPassword)) {
-    return <AdminLoginForm hasInvalidCookie={adminPassword.length > 0} />;
+  if (!admin) {
+    const adminCount = await prisma.user.count({ where: { role: 'ADMIN' } });
+    return <AdminLoginForm notConfigured={adminCount === 0} />;
   }
 
   return (
@@ -46,10 +40,31 @@ export default async function AdminPage() {
           >
             بررسی نوع‌های جدید
           </Link>
+
+          <Link
+            href="/admin/suggestions"
+            className="rounded-3xl bg-white p-6 text-center font-display text-xl text-turquoise-700 ring-1 ring-ink-900/[0.06] transition-all hover:-translate-y-0.5 hover:shadow-[0_18px_40px_-16px_rgba(26,99,93,0.45)]"
+          >
+            بررسی پیشنهادها
+          </Link>
+
+          <Link
+            href="/admin/ownership-requests"
+            className="rounded-3xl bg-white p-6 text-center font-display text-xl text-turquoise-700 ring-1 ring-ink-900/[0.06] transition-all hover:-translate-y-0.5 hover:shadow-[0_18px_40px_-16px_rgba(26,99,93,0.45)]"
+          >
+            بررسی درخواست‌های مالکیت
+          </Link>
+
+          <Link
+            href="/admin/comments"
+            className="rounded-3xl bg-white p-6 text-center font-display text-xl text-turquoise-700 ring-1 ring-ink-900/[0.06] transition-all hover:-translate-y-0.5 hover:shadow-[0_18px_40px_-16px_rgba(26,99,93,0.45)]"
+          >
+            بررسی نظرات
+          </Link>
         </div>
 
         <p className="mt-6 text-[13px] leading-6 text-ink-500">
-          نظرات نیز از داخل هر صفحه مدیریت می‌شوند — نیازی به باز کردن صفحه‌ای جداگانه نیست.
+          نظرات را می‌توانید از همین فهرست یا از داخل هر صفحه مدیریت کنید.
         </p>
       </div>
     </main>

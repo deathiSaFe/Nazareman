@@ -1,10 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isValidPhoneNumber, normalizePhoneNumber, requestPhoneVerificationCode } from '@/lib/verification';
+import { isRateLimited, rateLimitResponse } from '@/lib/rate-limit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+const REQUEST_IP_WINDOW_MS = 15 * 60 * 1000;
+const REQUEST_IP_LIMIT = 10;
+const REQUEST_PHONE_WINDOW_MS = 15 * 60 * 1000;
+const REQUEST_PHONE_LIMIT = 5;
+
 export async function POST(request: NextRequest) {
+  // Abuse guard: cap OTP send requests per IP before any work happens.
+  if (
+    isRateLimited(request, 'auth-request-ip', { limit: REQUEST_IP_LIMIT, windowMs: REQUEST_IP_WINDOW_MS })
+  ) {
+    return rateLimitResponse();
+  }
+
   const body = await request.json().catch(() => null);
 
   if (typeof body !== 'object' || body === null || Array.isArray(body)) {
@@ -21,6 +34,15 @@ export async function POST(request: NextRequest) {
   }
 
   const phoneNumber = normalizePhoneNumber(rawPhone);
+
+  if (
+    isRateLimited(request, `auth-request-phone:${phoneNumber}`, {
+      limit: REQUEST_PHONE_LIMIT,
+      windowMs: REQUEST_PHONE_WINDOW_MS,
+    })
+  ) {
+    return rateLimitResponse();
+  }
 
   try {
     const result = await requestPhoneVerificationCode(phoneNumber);

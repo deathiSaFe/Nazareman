@@ -1,11 +1,7 @@
 import Link from 'next/link';
 import { prisma } from '@/lib/prisma';
+import { getAdmin } from '@/lib/authorization';
 import { AdminLoginForm } from '@/components/admin/AdminLoginForm';
-import {
-  getAdminPassword,
-  validateAdminPassword,
-  getAdminPasswordFromCookie,
-} from '@/lib/admin-auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,9 +22,15 @@ function formatPersianDate(value: Date): string {
 }
 
 export default async function AdminTopicsPage() {
+  const admin = await getAdmin();
+
+  if (!admin) {
+    return <AdminLoginForm />;
+  }
+
   const pendingTopics = await prisma.topic.findMany({
     where: {
-      status: 'PENDING',
+      status: 'PENDING_REVIEW',
     },
     orderBy: {
       createdAt: 'desc',
@@ -59,16 +61,6 @@ export default async function AdminTopicsPage() {
       },
     },
   });
-
-  if (!getAdminPassword()) {
-    return <AdminLoginForm notConfigured />;
-  }
-
-  const adminPassword = await getAdminPasswordFromCookie();
-
-  if (!validateAdminPassword(adminPassword)) {
-    return <AdminLoginForm hasInvalidCookie={adminPassword.length > 0} />;
-  }
 
   return (
     <main className="min-h-screen bg-paper pb-16">

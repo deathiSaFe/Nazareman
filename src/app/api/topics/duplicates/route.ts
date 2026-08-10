@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { getCurrentUser } from '@/lib/auth';
 import { MATCH_THRESHOLD, scoreTopic, type TopicForMatch } from '@/lib/topic-matching';
+import type { ModerationStatus } from '@prisma/client';
 import type { LocationScope } from '@/types/topic';
 
 export const runtime = 'nodejs';
@@ -135,6 +137,32 @@ export async function POST(request: NextRequest) {
         ? { OR: [{ provinceId }, { cityId: null, provinceId: null }] }
         : { cityId: null, provinceId: null };
 
+    // Privacy gate: non-public topics (DRAFT/PENDING_REVIEW/CHANGES_REQUESTED/
+    // REJECTED) must never be revealed to other users. Anonymous callers only
+    // ever see APPROVED topics; authenticated users additionally see their OWN
+    // non-public topics so they can be warned about their own in-flight
+    // submissions.
+    const currentUser = await getCurrentUser();
+
+    const nonPublicStatuses: ModerationStatus[] = [
+      'DRAFT',
+      'PENDING_REVIEW',
+      'CHANGES_REQUESTED',
+      'REJECTED',
+    ];
+
+    const statusFilter = currentUser
+      ? {
+          OR: [
+            { status: 'APPROVED' as const },
+            {
+              status: { in: nonPublicStatuses },
+              submittedById: currentUser.id,
+            },
+          ],
+        }
+      : { status: 'APPROVED' as const };
+
     // Hard pre-filter: the PRIMARY type must match exactly, so a «پزشک» page
     // is never a candidate for a «کافی‌شاپ» query. (This is a loose superset —
     // the in-memory gate still requires the ordered-first type to match.)
@@ -142,13 +170,17 @@ export async function POST(request: NextRequest) {
 
     const candidates = await prisma.topic.findMany({
       where: {
-        status: { in: ['APPROVED', 'PENDING'] },
-        ...locationFilter,
-        types: {
-          some: {
-            type: { label: primaryType },
+        AND: [
+          locationFilter,
+          statusFilter,
+          {
+            types: {
+              some: {
+                type: { label: primaryType },
+              },
+            },
           },
-        },
+        ],
       },
       orderBy: { createdAt: 'desc' },
       take: CANDIDATE_LIMIT,
@@ -197,7 +229,7 @@ export async function POST(request: NextRequest) {
           slug: topic.slug,
           name: topic.name,
           types: topicTypes,
-          status: topic.status === 'PENDING' ? 'PENDING' : 'APPROVED',
+          status: topic.status,
           provinceId: topic.provinceId,
           cityId: topic.cityId,
         };

@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import yauzl from "yauzl";
 import readline from "node:readline";
 

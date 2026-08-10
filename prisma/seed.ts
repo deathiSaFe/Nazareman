@@ -155,7 +155,7 @@ async function printCounts(): Promise<void> {
 
 /**
  * Canonical pool of topic-type labels. Users pick from these (via the
- * autocomplete); brand-new labels they enter are stored as PENDING
+ * autocomplete); brand-new labels they enter are stored as PENDING_REVIEW
  * suggestions for admin review instead of joining this pool directly.
  */
 const TOPIC_TYPE_SUGGESTIONS: string[] = [
