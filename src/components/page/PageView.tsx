@@ -1237,6 +1237,69 @@ export function PageView({ page, editable = true, canSubmit = false, decisionNot
     setAddress(page.address ?? '');
   };
 
+  // Aggregate rating metadata (APPROVED pages): stars + decimal, comments
+  // count (scrolls to the comments section) and the questions placeholder.
+  // Shared by the desktop top-left pill and the phone compact row, so the
+  // two presentations can never drift apart.
+  const ratingMeta =
+    page.status === 'APPROVED' ? (
+      averageRatingState !== null && ratingCountState > 0 ? (
+        <>
+          <span className="flex items-center gap-1.5">
+            <StarRow value={averageRatingState} className="text-[12px] leading-none" />
+            <span className="text-[12px] font-bold leading-none">
+              {toPersianDecimal(averageRatingState)}
+            </span>
+          </span>
+          <span aria-hidden className="h-3.5 w-px bg-white/25" />
+          <button
+            type="button"
+            onClick={() =>
+              document.getElementById('page-comments')?.scrollIntoView({ behavior: 'smooth' })
+            }
+            aria-label="مشاهده نظرات"
+            className="rounded-full bg-white/90 px-2.5 py-1 text-[11px] font-bold leading-none text-ink-900 transition-colors hover:bg-white"
+          >
+            {toPersianDigits(ratingCountState)} نظر
+          </button>
+          <button
+            type="button"
+            aria-disabled="true"
+            title="پرسش‌ها به‌زودی"
+            className="rounded-full bg-white/90 px-2.5 py-1 text-[11px] font-bold leading-none text-ink-900"
+          >
+            {toPersianDigits(3)} پرسش
+          </button>
+        </>
+      ) : (
+        <span className="text-[11px] font-medium leading-none text-white/80">
+          هنوز امتیازی ثبت نشده
+        </span>
+      )
+    ) : null;
+
+  // Phone-only hero bottom row: «ثبت نظر» at the bottom-right and the
+  // rating / comments / questions pill at the bottom-left, vertically centred
+  // on the same line inside normal flex flow. On `md`+ it is hidden — the
+  // desktop hero keeps the separate absolute «ثبت نظر» and the top-left pill
+  // instead. Shares the same `ratingMeta` block as the pill.
+  const heroActionStack =
+    page.status === 'APPROVED' ? (
+      <div className="flex w-full items-center justify-between gap-2 md:hidden">
+        <button
+          type="button"
+          onClick={handleCommentClick}
+          className="inline-flex items-center gap-2 rounded-full bg-black/55 px-5 py-1 text-[13px] font-bold text-white ring-1 ring-white/25 backdrop-blur-md shadow-[0_10px_28px_-10px_rgba(0,0,0,0.65)] transition-colors hover:bg-black/70 max-[359px]:px-4 max-[359px]:gap-1.5"
+        >
+          <BubbleIcon strokeWidth={2} className="size-4 shrink-0" />
+          ثبت نظر
+        </button>
+        <div className="flex items-center gap-1 rounded-full bg-black/55 py-1 ps-2 pe-1 text-white ring-1 ring-white/20 backdrop-blur max-[359px]:gap-0.5 max-[359px]:ps-1.5">
+          {ratingMeta}
+        </div>
+      </div>
+    ) : null;
+
   if (submitted) {
     return (
       <div className="rounded-3xl bg-white p-8 text-center ring-1 ring-ink-900/[0.06] shadow-[0_10px_30px_-14px_rgba(21,67,63,0.3)]">
@@ -1351,27 +1414,35 @@ export function PageView({ page, editable = true, canSubmit = false, decisionNot
                   legible regardless of the image. */}
               <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/70 via-black/35 to-black/15" />
 
-              {/* Identity, top-right: name → primary type → secondary types. */}
+              {/* Header overlay — one normal-flow flex column covering the image:
+                  topic name + type chips at the top-right; on phones the
+                  bottom row holds «ثبت نظر» (bottom-right) and the
+                  rating/comments/questions pill (bottom-left) on the same
+                  line. A long name wraps inside its own row and can never
+                  overlap the bottom row. */}
               <div
                 id="tour-identity"
-                className="absolute inset-x-0 top-0 flex flex-col items-start gap-2 p-4 md:p-5"
+                className="absolute inset-0 flex flex-col justify-between p-3 md:px-5 md:pt-5 md:pb-3"
               >
-                <h1 className="font-display text-[22px] leading-8 text-white drop-shadow-[0_2px_10px_rgba(0,0,0,0.55)] md:text-[30px] md:leading-9">
-                  {name}
-                </h1>
-                <div className="mt-0.5 flex flex-col items-start gap-1">
-                  <span className="rounded-full bg-white/20 px-3 py-0.5 text-[11px] font-bold text-white ring-1 ring-white/25 backdrop-blur md:text-xs">
-                    {types[0]?.label ?? 'بدون نوع'}
-                  </span>
-                  {secondaryTypes.map((type, index) => (
-                    <span
-                      key={`${type.label}-${index}`}
-                      className="rounded-full bg-white/20 px-3 py-0.5 text-[11px] font-semibold text-white ring-1 ring-white/25 backdrop-blur md:text-xs"
-                    >
-                      {type.label}
+                <div className="flex min-w-0 flex-col items-start gap-2">
+                  <h1 className="break-words font-display text-[22px] leading-8 text-white drop-shadow-[0_2px_10px_rgba(0,0,0,0.55)] md:text-[30px] md:leading-9">
+                    {name}
+                  </h1>
+                  <div className="flex flex-col items-start gap-1">
+                    <span className="rounded-full bg-white/20 px-3 py-0.5 text-[11px] font-bold text-white ring-1 ring-white/25 backdrop-blur md:text-xs">
+                      {types[0]?.label ?? 'بدون نوع'}
                     </span>
-                  ))}
+                    {secondaryTypes.map((type, index) => (
+                      <span
+                        key={`${type.label}-${index}`}
+                        className="rounded-full bg-white/20 px-3 py-0.5 text-[11px] font-semibold text-white ring-1 ring-white/25 backdrop-blur md:text-xs"
+                      >
+                        {type.label}
+                      </span>
+                    ))}
+                  </div>
                 </div>
+                {heroActionStack}
               </div>
 
               {editable && (
@@ -1389,28 +1460,31 @@ export function PageView({ page, editable = true, canSubmit = false, decisionNot
           ) : (
             <div
               id="tour-image"
-              className="flex min-h-44 flex-col bg-gradient-to-br from-turquoise-900 via-turquoise-800 to-ink-900 px-4 pb-6 pt-4 md:min-h-56 md:px-5 md:pb-7 md:pt-5"
+              className="flex min-h-44 flex-col justify-between bg-gradient-to-br from-turquoise-900 via-turquoise-800 to-ink-900 px-3 pb-3 pt-3 md:min-h-56 md:px-5 md:pb-7 md:pt-5"
             >
-              <div id="tour-identity" className="flex flex-col items-start">
-                <h1 className="self-start font-display text-[22px] leading-8 text-white md:text-[30px] md:leading-9">
-                  {name}
-                </h1>
-                <div className="mt-2 flex flex-col items-start gap-1">
-                  <span className="rounded-full bg-white/15 px-3 py-0.5 text-[11px] font-bold text-white ring-1 ring-white/20 backdrop-blur md:text-xs">
-                    {types[0]?.label ?? 'بدون نوع'}
-                  </span>
-                  {secondaryTypes.map((type, index) => (
-                    <span
-                      key={`${type.label}-${index}`}
-                      className="rounded-full bg-white/15 px-3 py-0.5 text-[11px] font-semibold text-white ring-1 ring-white/20 backdrop-blur md:text-xs"
-                    >
-                      {type.label}
+              <div id="tour-identity" className="flex flex-col items-start gap-2">
+                <div className="flex min-w-0 flex-col items-start">
+                  <h1 className="self-start break-words font-display text-[22px] leading-8 text-white md:text-[30px] md:leading-9">
+                    {name}
+                  </h1>
+                  <div className="mt-2 flex flex-col items-start gap-1">
+                    <span className="rounded-full bg-white/15 px-3 py-0.5 text-[11px] font-bold text-white ring-1 ring-white/20 backdrop-blur md:text-xs">
+                      {types[0]?.label ?? 'بدون نوع'}
                     </span>
-                  ))}
+                    {secondaryTypes.map((type, index) => (
+                      <span
+                        key={`${type.label}-${index}`}
+                        className="rounded-full bg-white/15 px-3 py-0.5 text-[11px] font-semibold text-white ring-1 ring-white/20 backdrop-blur md:text-xs"
+                      >
+                        {type.label}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               </div>
 
-              <div className="mt-auto flex justify-center pt-6">
+              <div className="flex flex-col items-center gap-2">
+                {heroActionStack}
                 {editable && !imageOpen && (
                   <button
                     type="button"
@@ -1426,56 +1500,27 @@ export function PageView({ page, editable = true, canSubmit = false, decisionNot
           )}
 
           {/* Public aggregate rating — top-left of the page image (APPROVED
-              pages). The average (stars + decimal) is READ-ONLY informational
+              pages), only from `md` up. On phones the same three metadata
+              items render, horizontal, inside the bottom-centre hero stack
+              below. The average (stars + decimal) is READ-ONLY informational
               metadata, never a button. The «۲ نظر» button scrolls to the
               comments section; «۳ پرسش» is a visual placeholder for now. */}
           {page.status === 'APPROVED' && (
-            <div className="absolute top-3 left-4 flex items-center gap-1.5 rounded-full bg-black/55 py-1.5 pe-1.5 ps-3 text-white ring-1 ring-white/20 backdrop-blur">
-              {averageRatingState !== null && ratingCountState > 0 ? (
-                <>
-                  <span className="flex items-center gap-1.5">
-                    <StarRow value={averageRatingState} className="text-[12px] leading-none" />
-                    <span className="text-[12px] font-bold leading-none">
-                      {toPersianDecimal(averageRatingState)}
-                    </span>
-                  </span>
-                  <span aria-hidden className="h-3.5 w-px bg-white/25" />
-                  <button
-                    type="button"
-                    onClick={() =>
-                      document.getElementById('page-comments')?.scrollIntoView({ behavior: 'smooth' })
-                    }
-                    aria-label="مشاهده نظرات"
-                    className="rounded-full bg-white/90 px-2.5 py-1 text-[11px] font-bold leading-none text-ink-900 transition-colors hover:bg-white"
-                  >
-                    {toPersianDigits(ratingCountState)} نظر
-                  </button>
-                  <button
-                    type="button"
-                    aria-disabled="true"
-                    title="پرسش‌ها به‌زودی"
-                    className="rounded-full bg-white/90 px-2.5 py-1 text-[11px] font-bold leading-none text-ink-900"
-                  >
-                    {toPersianDigits(3)} پرسش
-                  </button>
-                </>
-              ) : (
-                <span className="text-[11px] font-medium leading-none text-white/80">
-                  هنوز امتیازی ثبت نشده
-                </span>
-              )}
+            <div className="absolute top-3 left-4 hidden items-center gap-1.5 rounded-full bg-black/55 py-1.5 pe-1.5 ps-3 text-white ring-1 ring-white/20 backdrop-blur md:flex">
+              {ratingMeta}
             </div>
           )}
 
-          {/* «ثبت نظر» — bottom-center of the page image (APPROVED pages). A
-              native-looking glass action that belongs to the image: same dark
-              translucent language as the aggregate pill, with a comment icon.
-              The personal star rating selector lives inside the composer. */}
+          {/* «ثبت نظر» — bottom-center of the page image (APPROVED pages), only from
+              `md` up. On phones the in-hero bottom row above renders its own
+              slimmer «ثبت نظر» alongside the rating row. Same dark translucent
+              language as the aggregate pill, with a comment icon. The personal
+              star rating selector lives inside the composer. */}
           {page.status === 'APPROVED' && (
             <button
               type="button"
               onClick={handleCommentClick}
-              className="absolute bottom-3 left-1/2 inline-flex -translate-x-1/2 items-center gap-2 rounded-full bg-black/55 px-5 py-2.5 text-[13px] font-bold text-white ring-1 ring-white/25 backdrop-blur-md shadow-[0_10px_28px_-10px_rgba(0,0,0,0.65)] transition-colors hover:bg-black/70"
+              className="absolute bottom-3 left-1/2 hidden -translate-x-1/2 items-center gap-2 rounded-full bg-black/55 px-5 py-2.5 text-[13px] font-bold text-white ring-1 ring-white/25 backdrop-blur-md shadow-[0_10px_28px_-10px_rgba(0,0,0,0.65)] transition-colors hover:bg-black/70 md:inline-flex"
             >
               <BubbleIcon strokeWidth={2} className="size-4 shrink-0" />
               ثبت نظر
