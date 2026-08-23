@@ -1278,14 +1278,13 @@ export function PageView({ page, editable = true, canSubmit = false, decisionNot
       )
     ) : null;
 
-  // Phone-only hero bottom row: «ثبت نظر» at the bottom-right and the
+  // Hero bottom row (all screen sizes): «ثبت نظر» at the bottom-right and the
   // rating / comments / questions pill at the bottom-left, vertically centred
-  // on the same line inside normal flex flow. On `md`+ it is hidden — the
-  // desktop hero keeps the separate absolute «ثبت نظر» and the top-left pill
-  // instead. Shares the same `ratingMeta` block as the pill.
+  // on the same line inside normal flex flow. Single layout for phones and
+  // desktop alike. Shares the same `ratingMeta` block as the pill.
   const heroActionStack =
     page.status === 'APPROVED' ? (
-      <div className="flex w-full items-center justify-between gap-2 md:hidden">
+      <div className="flex w-full items-center justify-between gap-2">
         <button
           type="button"
           onClick={handleCommentClick}
@@ -1415,8 +1414,8 @@ export function PageView({ page, editable = true, canSubmit = false, decisionNot
               <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/70 via-black/35 to-black/15" />
 
               {/* Header overlay — one normal-flow flex column covering the image:
-                  topic name + type chips at the top-right; on phones the
-                  bottom row holds «ثبت نظر» (bottom-right) and the
+                  topic name + type chips at the top-right; the bottom row
+                  holds «ثبت نظر» (bottom-right) and the
                   rating/comments/questions pill (bottom-left) on the same
                   line. A long name wraps inside its own row and can never
                   overlap the bottom row. */}
@@ -1499,33 +1498,6 @@ export function PageView({ page, editable = true, canSubmit = false, decisionNot
             </div>
           )}
 
-          {/* Public aggregate rating — top-left of the page image (APPROVED
-              pages), only from `md` up. On phones the same three metadata
-              items render, horizontal, inside the bottom-centre hero stack
-              below. The average (stars + decimal) is READ-ONLY informational
-              metadata, never a button. The «۲ نظر» button scrolls to the
-              comments section; «۳ پرسش» is a visual placeholder for now. */}
-          {page.status === 'APPROVED' && (
-            <div className="absolute top-3 left-4 hidden items-center gap-1.5 rounded-full bg-black/55 py-1.5 pe-1.5 ps-3 text-white ring-1 ring-white/20 backdrop-blur md:flex">
-              {ratingMeta}
-            </div>
-          )}
-
-          {/* «ثبت نظر» — bottom-center of the page image (APPROVED pages), only from
-              `md` up. On phones the in-hero bottom row above renders its own
-              slimmer «ثبت نظر» alongside the rating row. Same dark translucent
-              language as the aggregate pill, with a comment icon. The personal
-              star rating selector lives inside the composer. */}
-          {page.status === 'APPROVED' && (
-            <button
-              type="button"
-              onClick={handleCommentClick}
-              className="absolute bottom-3 left-1/2 hidden -translate-x-1/2 items-center gap-2 rounded-full bg-black/55 px-5 py-2.5 text-[13px] font-bold text-white ring-1 ring-white/25 backdrop-blur-md shadow-[0_10px_28px_-10px_rgba(0,0,0,0.65)] transition-colors hover:bg-black/70 md:inline-flex"
-            >
-              <BubbleIcon strokeWidth={2} className="size-4 shrink-0" />
-              ثبت نظر
-            </button>
-          )}
         </div>
 
         {/* Compact public action bar — immediately below the hero image,
