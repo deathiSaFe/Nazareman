@@ -20,6 +20,12 @@ export default function SiteHeader({
 
   const pathname = usePathname();
   const isTopicPage = pathname.startsWith('/topic/');
+  const isHomePage = pathname === '/';
+
+  // The «ثبت تجربه» quick-add CTA is not shown on topic pages (where it moved
+  // into the hamburger) nor on the homepage (where «افزودن موضوع» already
+  // exists) — it stays only on other desktop-width pages.
+  const showAddTopicCta = !isTopicPage && !isHomePage;
 
   // When the user is on a topic page, carry the exact topic path to the
   // profile page so it can offer a «بازگشت به صفحه موضوع» return link
@@ -65,11 +71,11 @@ export default function SiteHeader({
               <BrandMark />
             </div>
 
-            {/* Left edge (RTL end): add-topic CTA (not on topic pages — it moves
-                into the hamburger; also hidden on small screens where the
-                hamburger covers it) + the always-present account entry */}
+            {/* Left edge (RTL end): optional add-topic CTA (topic pages and the
+                homepage rely on the hamburger «افزودن موضوع» instead) + the
+                always-present account control */}
             <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
-              {!isTopicPage && (
+              {showAddTopicCta && (
                 <Link
                   href="/add-topic"
                   title="تجربه خود را با دیگران در میان بگذارید"
@@ -85,29 +91,33 @@ export default function SiteHeader({
                   href={profileHref}
                   aria-label="پروفایل من"
                   title={user.displayName || 'پروفایل من'}
-                  className="inline-flex min-w-0 items-center gap-1.5 rounded-full py-1.5 pe-2 ps-1 text-turquoise-700 transition-colors hover:bg-turquoise-600/10"
+                  className="inline-flex min-w-0 items-center gap-1.5 rounded-full bg-turquoise-600/10 px-2.5 py-1.5 text-[13px] font-bold text-turquoise-700 ring-1 ring-turquoise-600/40 transition-colors hover:bg-turquoise-600/20"
                 >
-                  <span className="grid size-8 shrink-0 place-items-center overflow-hidden rounded-full bg-turquoise-600/10 ring-1 ring-ink-900/10">
-                    {user.avatarUrl ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={user.avatarUrl} alt="" className="size-full object-cover" />
-                    ) : (
-                      <span className="font-display text-sm font-bold">
-                        {(user.displayName || user.phoneNumber).charAt(0)}
-                      </span>
-                    )}
-                  </span>
-                  {user.displayName && (
-                    <span className="truncate text-[13px] font-semibold text-ink-800">
-                      {user.displayName}
-                    </span>
+                  {user.avatarUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={user.avatarUrl} alt="" className="size-5 shrink-0 rounded-full object-cover" />
+                  ) : (
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth={2}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      className="size-4 shrink-0"
+                      aria-hidden="true"
+                    >
+                      <path d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0Z" />
+                      <path d="M4.5 20.25a7.5 7.5 0 0 1 15 0" />
+                    </svg>
                   )}
+                  {user.displayName && <span className="truncate">{user.displayName}</span>}
                 </Link>
               ) : (
                 <Link
                   href={loginHref}
                   aria-label="ورود / ثبت‌نام"
-                  className="inline-flex min-w-0 items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[13px] font-bold text-turquoise-700 transition-colors hover:bg-turquoise-600/10"
+                  className="inline-flex min-w-0 items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[13px] font-bold text-turquoise-700 ring-1 ring-turquoise-600/40 transition-colors hover:bg-turquoise-600/10 hover:ring-turquoise-600/60"
                 >
                   <svg
                     viewBox="0 0 24 24"
