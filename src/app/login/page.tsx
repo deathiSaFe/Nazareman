@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation';
 import type { Metadata } from 'next';
 import { getCurrentUser } from '@/lib/auth';
+import { safeNext } from '@/lib/safe-next';
 import { LoginForm } from '@/components/auth/LoginForm';
 
 export const dynamic = 'force-dynamic';
@@ -8,13 +9,6 @@ export const dynamic = 'force-dynamic';
 export const metadata: Metadata = {
   title: 'ورود / ثبت‌نام - نظرمن',
 };
-
-/** Allow only internal relative paths — never absolute/external URLs. */
-function safeNext(value: string | null | undefined): string | null {
-  if (!value) return null;
-  if (value.startsWith('//') || !value.startsWith('/')) return null;
-  return value;
-}
 
 export default async function LoginPage({
   searchParams,

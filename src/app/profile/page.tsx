@@ -2,6 +2,7 @@ import Link from 'next/link';
 import type { Metadata } from 'next';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUser } from '@/lib/auth';
+import { safeNext } from '@/lib/safe-next';
 import { SignOutButton } from '@/components/auth/SignOutButton';
 import { ProfileForm } from '@/components/profile/ProfileForm';
 import { topicHref } from '@/types/topic';
@@ -32,19 +33,48 @@ const STATUS_LABELS: Record<string, string> = {
   APPROVED: 'منتشر شده',
 };
 
-export default async function ProfilePage() {
+export default async function ProfilePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ next?: string }>;
+}) {
+  const { next } = await searchParams;
+
+  // Return-to-topic context, threaded through the header (hamburger/avatar)
+  // and kept alive across the login round-trip. Only an internal `/topic/...`
+  // path qualifies — anything else falls back to homepage navigation only.
+  const nextPath = safeNext(next);
+  const topicReturn = nextPath && nextPath.startsWith('/topic/') ? nextPath : null;
+
+  // Where a successful login should land: this same profile page, so the
+  // topic return context survives the login flow.
+  const loginNext = topicReturn
+    ? `/profile?next=${encodeURIComponent(topicReturn)}`
+    : '/profile';
+
   const user = await getCurrentUser();
 
   if (!user) {
     return (
       <main className="min-h-screen bg-paper pb-10">
         <div className="mx-auto w-full max-w-2xl px-5 pt-6">
-          <Link
-            href="/"
-            className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-medium text-turquoise-700 transition-colors hover:bg-turquoise-600/10"
-          >
-            بازگشت به صفحه اصلی
-          </Link>
+          <div className="flex items-center justify-between gap-3">
+            {topicReturn && (
+              <Link
+                href={topicReturn}
+                className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-medium text-turquoise-700 transition-colors hover:bg-turquoise-600/10"
+              >
+                بازگشت به صفحه موضوع
+              </Link>
+            )}
+
+            <Link
+              href="/"
+              className="ms-auto inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-medium text-turquoise-700 transition-colors hover:bg-turquoise-600/10"
+            >
+              بازگشت به صفحه اصلی
+            </Link>
+          </div>
 
           <h1 className="mt-3 font-display text-3xl text-ink-900">پروفایل من</h1>
 
@@ -54,7 +84,7 @@ export default async function ProfilePage() {
             </p>
 
             <Link
-              href="/login"
+              href={`/login?next=${encodeURIComponent(loginNext)}`}
               className="mt-6 inline-flex items-center justify-center gap-2 rounded-full bg-turquoise-600 px-7 py-3 text-sm font-bold text-white shadow-[0_10px_24px_-10px_rgba(26,99,93,0.55)] transition-all hover:-translate-y-0.5 hover:bg-turquoise-700 active:translate-y-0 active:scale-[0.97]"
             >
               ورود / ثبت‌نام
@@ -121,12 +151,23 @@ export default async function ProfilePage() {
   return (
     <main className="min-h-screen bg-paper pb-10">
       <div className="mx-auto w-full max-w-2xl px-5 pt-6">
-        <Link
-          href="/"
-          className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-medium text-turquoise-700 transition-colors hover:bg-turquoise-600/10"
-        >
-          بازگشت به صفحه اصلی
-        </Link>
+        <div className="flex items-center justify-between gap-3">
+          {topicReturn && (
+            <Link
+              href={topicReturn}
+              className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-medium text-turquoise-700 transition-colors hover:bg-turquoise-600/10"
+            >
+              بازگشت به صفحه موضوع
+            </Link>
+          )}
+
+          <Link
+            href="/"
+            className="ms-auto inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-medium text-turquoise-700 transition-colors hover:bg-turquoise-600/10"
+          >
+            بازگشت به صفحه اصلی
+          </Link>
+        </div>
 
         <h1 className="mt-3 font-display text-3xl text-ink-900">پروفایل من</h1>
 

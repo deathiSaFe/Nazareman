@@ -13,9 +13,24 @@ interface MobileMenuProps {
   /** Server-computed unread inbox count — shown as a badge next to
    *  «صندوق پیام‌ها» when there are unread messages. */
   unreadCount?: number;
+  /** Profile destination — carries the originating topic path (`?next=`)
+   *  when the menu was opened from a topic page, so the profile page can
+   *  offer a «بازگشت به صفحه موضوع» return link. */
+  profileHref?: string;
+  /** Signed-out entry — when opened from a topic page, routes through login
+   *  with the topic-aware profile URL as the return target, so the topic
+   *  context survives the login round-trip. */
+  loginHref?: string;
 }
 
-export default function MobileMenu({ isOpen, onClose, user, unreadCount = 0 }: MobileMenuProps) {
+export default function MobileMenu({
+  isOpen,
+  onClose,
+  user,
+  unreadCount = 0,
+  profileHref = '/profile',
+  loginHref = '/login',
+}: MobileMenuProps) {
   const router = useRouter();
 
   useEffect(() => {
@@ -48,8 +63,10 @@ export default function MobileMenu({ isOpen, onClose, user, unreadCount = 0 }: M
 
   const menuItems = [
     ...(user
-      ? [{ label: 'پروفایل من', href: '/profile', icon: '👤' }]
-      : [{ label: 'ورود / ثبت‌نام', href: '/login', icon: '🔑' }]),
+      ? [{ label: 'پروفایل من', href: profileHref, icon: '👤' }]
+      : [{ label: 'ورود / ثبت‌نام', href: loginHref, icon: '🔑' }]),
+    // Same wording and destination as the homepage «افزودن موضوع» button.
+    { label: 'افزودن موضوع', href: '/add-topic', icon: '➕' },
     { label: 'صفحه‌های من', href: '/my-topics', icon: '📝' },
     { label: 'علاقه‌مندی‌ها', href: '/favorites', icon: '❤️' },
     ...(user ? [{ label: 'صندوق پیام‌ها', href: '/inbox', icon: '✉️' }] : []),
